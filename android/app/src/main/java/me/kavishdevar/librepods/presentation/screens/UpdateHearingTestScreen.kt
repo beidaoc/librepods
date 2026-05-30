@@ -35,13 +35,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -57,35 +58,19 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.presentation.components.StyledScaffold
-import me.kavishdevar.librepods.services.ServiceManager
-import me.kavishdevar.librepods.bluetooth.ATTHandles
-import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.data.HearingAidSettings
 import me.kavishdevar.librepods.data.parseHearingAidSettingsResponse
 import me.kavishdevar.librepods.data.sendHearingAidSettings
-import java.io.IOException
+import me.kavishdevar.librepods.presentation.components.StyledScaffold
+import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 
-private var debounceJob: MutableState<Job?> = mutableStateOf(null)
 private const val TAG = "HearingAidAdjustments"
 
 @Composable
-fun UpdateHearingTestScreen() {
+fun UpdateHearingTestScreen(viewModel: AirPodsViewModel) {
     val verticalScrollState = rememberScrollState()
-//    val attManager = ServiceManager.getService()?.attManager
-//    if (attManager == null) {
-//        Text(
-//            text = stringResource(R.string.att_manager_is_null_try_reconnecting),
-//            modifier = Modifier
-//                .fillMaxSize()
-//                .padding(16.dp),
-//            textAlign = TextAlign.Center
-//        )
-//        return
-//    }
-
+    val state by viewModel.uiState.collectAsState()
     val backdrop = rememberLayerBackdrop()
     StyledScaffold(
         title = stringResource(R.string.hearing_test)
@@ -113,18 +98,31 @@ fun UpdateHearingTestScreen() {
                 ),
                 textAlign = TextAlign.Center,
             )
-            val tone = remember { mutableFloatStateOf(0.5f) }
-            val ambientNoiseReduction = remember { mutableFloatStateOf(0.0f) }
-            val ownVoiceAmplification = remember { mutableFloatStateOf(0.5f) }
-            val leftAmplification = remember { mutableFloatStateOf(0.5f) }
-            val rightAmplification = remember { mutableFloatStateOf(0.5f) }
-            val conversationBoostEnabled = remember { mutableStateOf(false) }
-            val leftEQ = remember { mutableStateOf(FloatArray(8)) }
-            val rightEQ = remember { mutableStateOf(FloatArray(8)) }
+            val tone = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val ambientNoiseReduction = rememberSaveable { mutableFloatStateOf(0.0f) }
+            val ownVoiceAmplification = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val leftAmplification = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val rightAmplification = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val conversationBoostEnabled = rememberSaveable { mutableStateOf(false) }
+            val leftEQ = rememberSaveable(
+                saver = Saver(
+                    save = { it.value.toList() },
+                    restore = { mutableStateOf(it.toFloatArray()) }
+                )
+            ) {
+                mutableStateOf(FloatArray(8))
+            }
+            val rightEQ = rememberSaveable(
+                saver = Saver(
+                    save = { it.value.toList() },
+                    restore = { mutableStateOf(it.toFloatArray()) }
+                )
+            ) {
+                mutableStateOf(FloatArray(8))
+            }
 
-            val initialLoadComplete = remember { mutableStateOf(false) }
-            val initialReadSucceeded = remember { mutableStateOf(false) }
-            val initialReadAttempts = remember { mutableIntStateOf(0) }
+            val debounceJob = remember { mutableStateOf<Job?>(null) }
+            val initialized = rememberSaveable { mutableStateOf(false) }
 
             val hearingAidSettings = remember {
                 mutableStateOf(
@@ -146,59 +144,35 @@ fun UpdateHearingTestScreen() {
                 )
             }
 
-            val hearingAidATTListener = remember {
-                object : (ByteArray) -> Unit {
-                    override fun invoke(value: ByteArray) {
-                        val parsed = parseHearingAidSettingsResponse(value)
-                        if (parsed != null) {
-                            leftEQ.value = parsed.leftEQ.copyOf()
-                            rightEQ.value = parsed.rightEQ.copyOf()
-                            conversationBoostEnabled.value = parsed.leftConversationBoost
-                            tone.floatValue = parsed.leftTone
-                            ambientNoiseReduction.floatValue = parsed.leftAmbientNoiseReduction
-                            ownVoiceAmplification.floatValue = parsed.ownVoiceAmplification
-                            leftAmplification.floatValue = parsed.leftAmplification
-                            rightAmplification.floatValue = parsed.rightAmplification
-                            Log.d(TAG, "Updated hearing aid settings from notification")
-                        } else {
-                            Log.w(TAG, "Failed to parse hearing aid settings from notification")
-                        }
-                    }
+            LaunchedEffect(state.hearingAidData) {
+                val parsed = parseHearingAidSettingsResponse(state.hearingAidData)
+                if (parsed != null) {
+                    leftEQ.value = parsed.leftEQ.copyOf()
+                    rightEQ.value = parsed.rightEQ.copyOf()
+                    conversationBoostEnabled.value = parsed.leftConversationBoost
+                    tone.floatValue = parsed.leftTone
+                    ambientNoiseReduction.floatValue = parsed.leftAmbientNoiseReduction
+                    ownVoiceAmplification.floatValue = parsed.ownVoiceAmplification
+                    leftAmplification.floatValue = parsed.leftAmplification
+                    rightAmplification.floatValue = parsed.rightAmplification
+                    initialized.value = true
+                    Log.d(TAG, "Updated hearing aid settings from notification")
+                } else {
+                    Log.w(TAG, "Failed to parse hearing aid settings from notification")
                 }
             }
-
-
-//            DisposableEffect(Unit) {
-//                onDispose {
-//                    attManager.unregisterListener(ATTHandles.HEARING_AID, hearingAidATTListener)
-//                }
-//            }
 
             LaunchedEffect(
                 leftEQ.value,
                 rightEQ.value,
                 conversationBoostEnabled.value,
-                initialLoadComplete.value,
-                initialReadSucceeded.value,
                 leftAmplification.floatValue,
                 rightAmplification.floatValue,
                 tone.floatValue,
                 ambientNoiseReduction.floatValue,
                 ownVoiceAmplification.floatValue
             ) {
-                if (!initialLoadComplete.value) {
-                    Log.d(TAG, "Initial device load not complete - skipping send")
-                    return@LaunchedEffect
-                }
-
-                if (!initialReadSucceeded.value) {
-                    Log.d(
-                        TAG,
-                        "Initial device read not successful yet - skipping send until read succeeds"
-                    )
-                    return@LaunchedEffect
-                }
-
+                if (!initialized.value) return@LaunchedEffect
                 hearingAidSettings.value = HearingAidSettings(
                     leftEQ = leftEQ.value,
                     rightEQ = rightEQ.value,
@@ -215,55 +189,7 @@ fun UpdateHearingTestScreen() {
                     ownVoiceAmplification = ownVoiceAmplification.floatValue
                 )
                 Log.d(TAG, "Updated settings: ${hearingAidSettings.value}")
-                sendHearingAidSettings(hearingAidSettings.value, debounceJob)
-            }
-
-            LaunchedEffect(Unit) {
-                Log.d(TAG, "Connecting to ATT...")
-                try {
-//                    attManager.enableNotifications(ATTHandles.HEARING_AID)
-//                    attManager.registerListener(ATTHandles.HEARING_AID, hearingAidATTListener)
-
-                    var parsedSettings: HearingAidSettings? = null
-                    for (attempt in 1..3) {
-                        initialReadAttempts.intValue = attempt
-                        try {
-                            val data = ATTManagerv2.readCharacteristic(ATTHandles.HEARING_AID)?: byteArrayOf()
-                            parsedSettings = parseHearingAidSettingsResponse(data = data)
-                            if (parsedSettings != null) {
-                                Log.d(TAG, "Parsed settings on attempt $attempt")
-                                break
-                            } else {
-                                Log.d(TAG, "Parsing returned null on attempt $attempt")
-                            }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Read attempt $attempt failed: ${e.message}")
-                        }
-                        delay(200)
-                    }
-
-                    if (parsedSettings != null) {
-                        Log.d(TAG, "Initial hearing aid settings: $parsedSettings")
-                        leftEQ.value = parsedSettings.leftEQ.copyOf()
-                        rightEQ.value = parsedSettings.rightEQ.copyOf()
-                        conversationBoostEnabled.value = parsedSettings.leftConversationBoost
-                        tone.floatValue = parsedSettings.leftTone
-                        ambientNoiseReduction.floatValue = parsedSettings.leftAmbientNoiseReduction
-                        ownVoiceAmplification.floatValue = parsedSettings.ownVoiceAmplification
-                        leftAmplification.floatValue = parsedSettings.leftAmplification
-                        rightAmplification.floatValue = parsedSettings.rightAmplification
-                        initialReadSucceeded.value = true
-                    } else {
-                        Log.d(
-                            TAG,
-                            "Failed to read/parse initial hearing aid settings after ${initialReadAttempts.intValue} attempts"
-                        )
-                    }
-                } catch (e: IOException) {
-                    e.printStackTrace()
-                } finally {
-                    initialLoadComplete.value = true
-                }
+                sendHearingAidSettings(state.hearingAidData, hearingAidSettings.value, debounceJob, viewModel::setATTCharacteristicValue)
             }
 
             val frequencies =

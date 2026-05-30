@@ -83,7 +83,8 @@ data class TransparencySettings(
     }
 }
 
-fun parseTransparencySettingsResponse(data: ByteArray): TransparencySettings {
+fun parseTransparencySettingsResponse(data: ByteArray): TransparencySettings? {
+    if (data.size < 50) return null // 50 is arbitrary, too lazy to count
     val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
     val enabled = buffer.float

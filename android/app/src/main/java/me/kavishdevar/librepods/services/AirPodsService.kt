@@ -85,7 +85,9 @@ import me.kavishdevar.librepods.MainActivity
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.bluetooth.AACPManager.Companion.StemPressType
-import me.kavishdevar.librepods.bluetooth.ATTManager
+import me.kavishdevar.librepods.bluetooth.ATTCCCDHandles
+import me.kavishdevar.librepods.bluetooth.ATTHandles
+import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
 import me.kavishdevar.librepods.data.AirPodsInstance
@@ -126,7 +128,6 @@ import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_LOW_BATTERY_THRESHOLD
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.time.LocalDateTime
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
@@ -152,6 +153,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var macAddress = ""
     var localMac = ""
     lateinit var aacpManager: AACPManager
+    lateinit var attManager: ATTManagerv2
     var airpodsInstance: AirPodsInstance? = null
     var cameraActive = false
     private var disconnectedBecauseReversed = false
@@ -379,6 +381,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         aacpManager = AACPManager()
         initializeAACPManagerCallback()
+
+        attManager = ATTManagerv2()
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
 
@@ -693,7 +697,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     popupShown = false
                     updateNotificationContent(false)
                     aacpManager.disconnected()
-                    BluetoothConnectionManager.getATTSocket()?.close()
+                    attManager.disconnected()
                     BluetoothConnectionManager.setCurrentConnection(null, null)
                 }
             }
@@ -2702,6 +2706,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         } else null
                         attSocket?.connect()
                         BluetoothConnectionManager.setCurrentConnection(socket, attSocket)
+                        if (attSocket != null) {
+                            attManager.startReader()
+                            attManager.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)
+                            attManager.readCharacteristic(ATTHandles.TRANSPARENCY)
+                            attManager.readCharacteristic(ATTHandles.HEARING_AID)
+                            attManager.enableNotification(ATTCCCDHandles.HEARING_AID)
+//                            attManager.enableNotification(ATTCCCDHandles.LOUD_SOUND_REDUCTION)
+                            attManager.enableNotification(ATTCCCDHandles.TRANSPARENCY)
+                        }
 
                         // Create AirPodsInstance from stored config if available
                         if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
@@ -2906,7 +2919,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         socket.close()
 //        isConnectedLocally = false
         aacpManager.disconnected()
-        BluetoothConnectionManager.getATTSocket()?.close()
+        attManager.disconnected()
         BluetoothConnectionManager.setCurrentConnection(null, null)
         updateNotificationContent(false)
         sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {

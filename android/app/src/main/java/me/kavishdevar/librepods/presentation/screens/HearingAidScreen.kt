@@ -259,6 +259,10 @@ fun HearingAidScreen(viewModel: AirPodsViewModel, navController: NavController) 
                         return@launch
                     }
                     val parsed = parseTransparencySettingsResponse(state.hearingAidData)
+                    if (parsed == null) {
+                        Log.w(TAG, "transparency parse failed")
+                        return@launch
+                    }
                     val disabledSettings = parsed.copy(enabled = false)
                     sendTransparencySettings(viewModel::setATTCharacteristicValue, disabledSettings)
                 } catch (e: Exception) {

@@ -29,7 +29,6 @@ import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,8 +38,8 @@ import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.bluetooth.AACPManager.Companion.ControlCommandIdentifiers
+import me.kavishdevar.librepods.bluetooth.ATTCCCDHandles
 import me.kavishdevar.librepods.bluetooth.ATTHandles
-import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.data.AirPodsInstance
 import me.kavishdevar.librepods.data.AirPodsModels
 import me.kavishdevar.librepods.data.AirPodsNotifications
@@ -52,7 +51,6 @@ import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.services.AirPodsService
-import kotlin.time.Duration.Companion.milliseconds
 
 @Suppress("ArrayInDataClass")
 data class AirPodsUiState(
@@ -147,6 +145,7 @@ class AirPodsViewModel(
         loadSharedPreferences()
         setupControlObservers()
         loadControlList()
+        loadATT()
         observeATT()
         observeSharedPreferences()
         observeBilling()
@@ -527,27 +526,36 @@ class AirPodsViewModel(
     }
 
     fun setATTCharacteristicValue(handle: ATTHandles, value: ByteArray) {
-        if (handle == ATTHandles.LOUD_SOUND_REDUCTION) {
-            _uiState.update { it.copy(loudSoundReductionEnabled = value[0].toInt() == 0x01) }
+        when (handle) {
+            // ideally should be using a different viewmodel for ATT based things because there are a lot of values, and I am not going to add all to this state, but there's loudsoundreduction.
+            ATTHandles.LOUD_SOUND_REDUCTION -> {
+                _uiState.value = _uiState.value.copy(loudSoundReductionEnabled = value[0].toInt() == 0x01)
+            }
+            ATTHandles.HEARING_AID -> {
+                _uiState.value = _uiState.value.copy(hearingAidData = value)
+            }
+            ATTHandles.TRANSPARENCY -> {
+                _uiState.value = _uiState.value.copy(transparencyData = value)
+            }
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                ATTManagerv2.writeCharacteristic(handle, value)
+                service.attManager.writeCharacteristic(handle, value)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
 
-    fun refreshATT() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val loudSoundReduction = ATTManagerv2.readCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION) ?: byteArrayOf()
-            val loudSoundReductionEnabled = if (loudSoundReduction.isNotEmpty()) {
-                    loudSoundReduction[0].toInt() == 1
-            } else false
-            val transparencyData = ATTManagerv2.readCharacteristic(ATTHandles.TRANSPARENCY)?: byteArrayOf()
-            val hearingAidData = ATTManagerv2.readCharacteristic(ATTHandles.HEARING_AID)?:byteArrayOf()
-            _uiState.value = _uiState.value.copy(
+    fun loadATT() {
+        val loudSoundReduction = service.attManager.getCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION) ?: byteArrayOf()
+        val loudSoundReductionEnabled = if (loudSoundReduction.isNotEmpty()) {
+            loudSoundReduction[0].toInt() == 1
+        } else false
+        val hearingAidData = service.attManager.getCharacteristic(ATTHandles.HEARING_AID) ?: byteArrayOf()
+        val transparencyData = service.attManager.getCharacteristic(ATTHandles.TRANSPARENCY) ?: byteArrayOf()
+        _uiState.update {
+            it.copy(
                 loudSoundReductionEnabled = loudSoundReductionEnabled,
                 transparencyData = transparencyData,
                 hearingAidData = hearingAidData
@@ -557,9 +565,30 @@ class AirPodsViewModel(
 
     fun observeATT() {
         viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                refreshATT()
-                delay(15000.milliseconds)
+            service.attManager.enableNotification(ATTCCCDHandles.HEARING_AID)
+            service.attManager.enableNotification(ATTCCCDHandles.TRANSPARENCY)
+//            service.attManager.enableNotification(ATTCCCDHandles.LOUD_SOUND_REDUCTION)
+        }
+        service.attManager.setOnNotificationReceived { handle, value ->
+            when (handle) {
+                ATTHandles.LOUD_SOUND_REDUCTION.value.toByte() -> {
+                    val loudSoundReductionEnabled = if (value.isNotEmpty()) {
+                        value[0].toInt() == 1
+                    } else false
+                    _uiState.update {
+                        it.copy(loudSoundReductionEnabled = loudSoundReductionEnabled)
+                    }
+                }
+                ATTHandles.HEARING_AID.value.toByte() -> {
+                    _uiState.update {
+                        it.copy(hearingAidData = value)
+                    }
+                }
+                ATTHandles.TRANSPARENCY.value.toByte() -> {
+                    _uiState.update {
+                        it.copy(transparencyData = value)
+                    }
+                }
             }
         }
     }

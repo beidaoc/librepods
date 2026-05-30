@@ -466,7 +466,7 @@ fun Main() {
                         OpenSourceLicensesScreen(navController)
                     }
                     composable("update_hearing_test") {
-                        if (airPodsViewModel != null) UpdateHearingTestScreen()
+                        if (airPodsViewModel != null) UpdateHearingTestScreen(airPodsViewModel)
                     }
                     composable("version_info") {
                         if (airPodsViewModel != null) VersionScreen(airPodsViewModel)

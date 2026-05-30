@@ -46,9 +46,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
@@ -64,17 +65,14 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
-import kotlinx.coroutines.delay
-import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
-import me.kavishdevar.librepods.presentation.components.StyledScaffold
-import me.kavishdevar.librepods.presentation.components.StyledSlider
-import me.kavishdevar.librepods.presentation.components.StyledToggle
 import me.kavishdevar.librepods.data.TransparencySettings
 import me.kavishdevar.librepods.data.parseTransparencySettingsResponse
 import me.kavishdevar.librepods.data.sendTransparencySettings
+import me.kavishdevar.librepods.presentation.components.StyledScaffold
+import me.kavishdevar.librepods.presentation.components.StyledSlider
+import me.kavishdevar.librepods.presentation.components.StyledToggle
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
-import java.io.IOException
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 private const val TAG = "TransparencySettings"
@@ -112,19 +110,26 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
             Spacer(modifier = Modifier.height(topPadding))
             val backgroundColor = if (isDarkTheme) Color(0xFF1C1C1E) else Color(0xFFFFFFFF)
 
-            val enabled = remember { mutableStateOf(false) }
-            val amplificationSliderValue = remember { mutableFloatStateOf(0.5f) }
-            val balanceSliderValue = remember { mutableFloatStateOf(0.5f) }
-            val toneSliderValue = remember { mutableFloatStateOf(0.5f) }
-            val ambientNoiseReductionSliderValue = remember { mutableFloatStateOf(0.0f) }
-            val conversationBoostEnabled = remember { mutableStateOf(false) }
-            val eq = remember { mutableStateOf(FloatArray(8)) }
-            val phoneMediaEQ = remember { mutableStateOf(FloatArray(8) { 0.5f }) }
+            val enabled = rememberSaveable { mutableStateOf(false) }
+            val amplificationSliderValue = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val balanceSliderValue = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val toneSliderValue = rememberSaveable { mutableFloatStateOf(0.5f) }
+            val ambientNoiseReductionSliderValue = rememberSaveable { mutableFloatStateOf(0.0f) }
+            val conversationBoostEnabled = rememberSaveable { mutableStateOf(false) }
+            val eq = rememberSaveable(
+                saver = Saver(
+                    save = { it.value.toList() },
+                    restore = { mutableStateOf(it.toFloatArray()) }
+                )
+            ) { mutableStateOf(FloatArray(8)) }
+            val phoneMediaEQ = rememberSaveable(
+                saver = Saver(
+                    save = { it.value.toList() },
+                    restore = { mutableStateOf(it.toFloatArray()) }
+                )
+            ) { mutableStateOf(FloatArray(8) { 0.5f }) }
 
-            val initialLoadComplete = remember { mutableStateOf(false) }
-
-            val initialReadSucceeded = remember { mutableStateOf(false) }
-            val initialReadAttempts = remember { mutableIntStateOf(0) }
+            val initialized = rememberSaveable { mutableStateOf(false) }
 
             val transparencySettings = remember {
                 mutableStateOf(
@@ -153,23 +158,9 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 toneSliderValue.floatValue,
                 conversationBoostEnabled.value,
                 ambientNoiseReductionSliderValue.floatValue,
-                eq.value,
-                initialLoadComplete.value,
-                initialReadSucceeded.value
+                eq.value
             ) {
-                if (!initialLoadComplete.value) {
-                    Log.d(TAG, "Initial device load not complete - skipping send")
-                    return@LaunchedEffect
-                }
-
-                if (!initialReadSucceeded.value) {
-                    Log.d(
-                        TAG,
-                        "Initial device read not successful yet - skipping send until read succeeds"
-                    )
-                    return@LaunchedEffect
-                }
-
+                if (!initialized.value) return@LaunchedEffect
                 transparencySettings.value = TransparencySettings(
                     enabled = enabled.value,
                     leftEQ = eq.value,
@@ -189,59 +180,20 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 sendTransparencySettings(viewModel::setATTCharacteristicValue, transparencySettings.value)
             }
 
-            LaunchedEffect(Unit) {
-                Log.d(TAG, "Connecting to ATT...")
-                try {
-                    // If we have an AACP manager, prefer its EQ data to populate EQ controls first
-                    try {
-                        Log.d(TAG, "Found AACPManager, reading cached EQ data")
-                        val aacpEQ = state.eqData
-                        if (aacpEQ.isNotEmpty()) {
-                            eq.value = aacpEQ.copyOf()
-                            phoneMediaEQ.value = aacpEQ.copyOf()
-                            Log.d(TAG, "Populated EQ from AACPManager: ${aacpEQ.toList()}")
-                        } else {
-                            Log.d(TAG, "AACPManager EQ data empty")
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error reading EQ from AACPManager: ${e.message}")
-                    }
-
-                    var parsedSettings: TransparencySettings? = null
-                    for (attempt in 1..3) {
-                        initialReadAttempts.intValue = attempt
-                        try {
-                            val data = state.transparencyData
-                            parsedSettings = parseTransparencySettingsResponse(data = data)
-                            Log.d(TAG, "Parsed settings on attempt $attempt")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Read attempt $attempt failed: ${e.message}")
-                        }
-                        delay(200)
-                    }
-
-                    if (parsedSettings != null) {
-                        Log.d(TAG, "Initial transparency settings: $parsedSettings")
-                        enabled.value = parsedSettings.enabled
-                        amplificationSliderValue.floatValue = parsedSettings.netAmplification
-                        balanceSliderValue.floatValue = parsedSettings.balance
-                        toneSliderValue.floatValue = parsedSettings.leftTone
-                        ambientNoiseReductionSliderValue.floatValue =
-                            parsedSettings.leftAmbientNoiseReduction
-                        conversationBoostEnabled.value = parsedSettings.leftConversationBoost
-                        eq.value = parsedSettings.leftEQ.copyOf()
-                        initialReadSucceeded.value = true
-                    } else {
-                        Log.d(
-                            TAG,
-                            "Failed to read/parse initial transparency settings after ${initialReadAttempts.intValue} attempts"
-                        )
-                    }
-                } catch (e: IOException) {
-                    e.printStackTrace()
-                } finally {
-                    initialLoadComplete.value = true
+            LaunchedEffect(state.transparencyData) {
+                val parsedSettings = parseTransparencySettingsResponse(data = state.transparencyData) ?: return@LaunchedEffect
+                Log.d(TAG, "Initial transparency settings: $parsedSettings")
+                enabled.value = parsedSettings.enabled
+                amplificationSliderValue.floatValue = parsedSettings.netAmplification
+                balanceSliderValue.floatValue = parsedSettings.balance
+                toneSliderValue.floatValue = parsedSettings.leftTone
+                ambientNoiseReductionSliderValue.floatValue =
+                    parsedSettings.leftAmbientNoiseReduction
+                conversationBoostEnabled.value = parsedSettings.leftConversationBoost
+                if (!eq.value.contentEquals(parsedSettings.leftEQ)) {
+                    eq.value = parsedSettings.leftEQ.copyOf()
                 }
+                initialized.value = true
             }
 
             if (state.vendorIdHook) {

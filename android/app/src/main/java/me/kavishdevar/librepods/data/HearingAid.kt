@@ -26,8 +26,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.bluetooth.ATTHandles
-import me.kavishdevar.librepods.bluetooth.ATTManager
-import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -139,15 +137,15 @@ fun parseHearingAidSettingsResponse(data: ByteArray): HearingAidSettings? {
 }
 
 fun sendHearingAidSettings(
-//    attManager: ATTManager,
+    currentData: ByteArray,
     hearingAidSettings: HearingAidSettings,
-    debounceJob: MutableState<Job?>
+    debounceJob: MutableState<Job?>,
+    sender: (ATTHandles, ByteArray) -> Unit
 ) {
     debounceJob.value?.cancel()
     debounceJob.value = CoroutineScope(Dispatchers.IO).launch {
         delay(100)
         try {
-            val currentData = ATTManagerv2.readCharacteristic(ATTHandles.HEARING_AID)?: return@launch
             Log.d(TAG, "Current data before update: ${currentData.joinToString(" ") { String.format("%02X", it) }}")
             if (currentData.size < 104) {
                 Log.w(TAG, "Current data size ${currentData.size} too small, cannot send settings")
@@ -185,7 +183,7 @@ fun sendHearingAidSettings(
 
             Log.d(TAG, "Sending updated settings: ${currentData.joinToString(" ") { String.format("%02X", it) }}")
 
-            ATTManagerv2.writeCharacteristic(ATTHandles.HEARING_AID, currentData)
+            sender(ATTHandles.HEARING_AID, currentData)
         } catch (e: IOException) {
             e.printStackTrace()
         }
