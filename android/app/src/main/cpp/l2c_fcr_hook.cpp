@@ -45,6 +45,30 @@ static tBTA_STATUS (*original_BTA_DmSetLocalDiRecord)(tSDP_DI_RECORD *, uint32_t
 
 static std::atomic<bool> enableSdpHook(false);
 
+static bool isBluetoothProcess() {
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) {
+        LOGE("cannot read process name; native hooks will stay disabled");
+        return false;
+    }
+
+    char cmdline[256] = {};
+    ssize_t length = read(fd, cmdline, sizeof(cmdline) - 1);
+    close(fd);
+    if (length <= 0) {
+        LOGE("empty process name; native hooks will stay disabled");
+        return false;
+    }
+
+    const std::string processName(cmdline);
+    const bool allowed = processName.rfind("com.android.bluetooth", 0) == 0
+            || processName.rfind("com.google.android.bluetooth", 0) == 0;
+    if (!allowed) {
+        LOGI("native hooks disabled outside Bluetooth process: %s", processName.c_str());
+    }
+    return allowed;
+}
+
 uint8_t fake_l2c_fcr_chk_chan_modes(void *p_ccb) {
     LOGI("fake_l2c_fcr_chk_chan_modes called");
     uint8_t orig = 0;
@@ -419,6 +443,9 @@ extern "C" [[gnu::visibility("default")]]
 [[gnu::used]]
 NativeOnModuleLoaded native_init(const NativeAPIEntries *entries) {
     LOGI("native_init called with entries: %p", entries);
+    if (!isBluetoothProcess()) {
+        return nullptr;
+    }
     hook_func = (HookFunType) entries->hook_func;
     LOGI("LibrePodsNativeHook initialized, sdp hook enabled: %d",
          enableSdpHook.load(std::memory_order_relaxed));

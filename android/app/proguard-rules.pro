@@ -21,3 +21,14 @@
 #-renamesourcefileattribute SourceFile
 
 -keep class me.kavishdevar.librepods.utils.KotlinModule { *; }
+
+# Xiaomi Bluetooth Extension / AirCore conflict protection. The module entry and
+# resolver names are loaded by LSPosed and reflection, so R8 must retain them.
+-keep,allowoptimization class me.kavishdevar.librepods.xiaomifix.XiaomiFixModule {
+    <init>();
+    public <methods>;
+}
+-keep class me.kavishdevar.librepods.xiaomifix.resolve.** { *; }
+-keep class org.luckypray.dexkit.** { *; }
+-keepattributes InnerClasses,EnclosingMethod,Signature,Exceptions
+-dontwarn org.luckypray.dexkit.**
