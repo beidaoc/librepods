@@ -12,6 +12,10 @@
     <string name="case_alt">充电盒</string>
     <string name="test">测试</string>
     <string name="name">名称</string>
+    <string name="heart_rate">心率</string>
+    <string name="heart_rate_off">关闭</string>
+    <string name="heart_rate_measuring">正在检测…</string>
+    <string name="heart_rate_live">实时心率</string>
     <string name="noise_control">听音模式</string>
     <string name="off">关闭</string>
     <string name="transparency">通透模式</string>

@@ -18,11 +18,9 @@
 
 package me.kavishdevar.librepods.utils
 
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlin.math.atan2
-import kotlin.math.max
-import kotlin.math.sqrt
 
 data class Orientation(val pitch: Float = 0f, val yaw: Float = 0f)
 data class Acceleration(val vertical: Float = 0f, val horizontal: Float = 0f)
@@ -43,112 +41,47 @@ object HeadTracking {
     private val _acceleration = MutableStateFlow(Acceleration())
     val acceleration = _acceleration.asStateFlow()
 
-    private data class Quaternion(
-        val w: Double,
-        val x: Double,
-        val y: Double,
-        val z: Double
-    ) {
-        fun normalized(): Quaternion {
-            val magnitude = sqrt(w * w + x * x + y * y + z * z)
-            if (magnitude < 1e-9) return Quaternion(1.0, 0.0, 0.0, 0.0)
-            return Quaternion(w / magnitude, x / magnitude, y / magnitude, z / magnitude)
-        }
-
-        fun conjugate() = Quaternion(w, -x, -y, -z)
-
-        operator fun times(other: Quaternion) = Quaternion(
-            w = w * other.w - x * other.x - y * other.y - z * other.z,
-            x = w * other.x + x * other.w + y * other.z - z * other.y,
-            y = w * other.y - x * other.z + y * other.w + z * other.x,
-            z = w * other.z + x * other.y - y * other.x + z * other.w
-        )
-
-        fun canonicalized() = if (w < 0.0) {
-            Quaternion(-w, -x, -y, -z)
-        } else {
-            this
-        }
-
-        fun toRotationVector(): Triple<Float, Float, Float> {
-            val q = normalized().canonicalized()
-            val vectorMagnitude = sqrt(q.x * q.x + q.y * q.y + q.z * q.z)
-            if (vectorMagnitude < 1e-9) return Triple(0f, 0f, 0f)
-            val angle = 2.0 * atan2(vectorMagnitude, q.w)
-            val scale = angle / vectorMagnitude
-            return Triple(
-                (q.x * scale).toFloat(),
-                (q.y * scale).toFloat(),
-                (q.z * scale).toFloat()
-            )
-        }
-    }
-
-    private val calibrationSamples = mutableListOf<Quaternion>()
-    private var referenceOrientation: Quaternion? = null
-    private var discontinuityCounter = 0
-
-    private const val CALIBRATION_SAMPLE_COUNT = 10
-    private const val QUATERNION_SCALE = 32767.0
+    private val poseProcessor = SpatialHeadPoseProcessor()
+    private var lastDiagnosticsLogNanos = 0L
+    private var lastRecenterState = SpatialRecenterState.LOCKED
 
     fun processPacket(packet: ByteArray): HeadPose? {
         if (packet.size < 55) return null
-
-        val quaternion = decodeQuaternion(
-            bytesToInt(packet[43], packet[44]),
-            bytesToInt(packet[45], packet[46]),
-            bytesToInt(packet[47], packet[48])
-        )
 
         val horizontalAccel = bytesToInt(packet[51], packet[52]).toFloat()
         val verticalAccel = bytesToInt(packet[53], packet[54]).toFloat()
         _acceleration.value = Acceleration(verticalAccel, horizontalAccel)
 
-        if (referenceOrientation == null) {
-            calibrationSamples.add(quaternion)
-            if (calibrationSamples.size >= CALIBRATION_SAMPLE_COUNT) {
-                calibrate()
-            }
-            return null
-        }
-
-        // AirPods sends a reference-to-head quaternion with the positive W
-        // component omitted. Android's head tracker expects the inverse
-        // (head-to-reference) transform, rebased to the stream-start pose.
-        // Without this inversion, a head turn makes the rendered sound field
-        // move in the opposite direction.
-        val relative = (quaternion * referenceOrientation!!.conjugate())
-            .conjugate()
-            .normalized()
-            .canonicalized()
-        val (rx, ry, rz) = relative.toRotationVector()
+        val sample = poseProcessor.processRawComponents(
+            bytesToInt(packet[43], packet[44]),
+            bytesToInt(packet[45], packet[46]),
+            bytesToInt(packet[47], packet[48]),
+            System.nanoTime()
+        ) ?: return null
 
         _orientation.value = Orientation(
-            pitch = Math.toDegrees(rx.toDouble()).toFloat(),
-            yaw = Math.toDegrees(rz.toDouble()).toFloat()
+            pitch = Math.toDegrees(sample.pose.rx.toDouble()).toFloat(),
+            yaw = Math.toDegrees(sample.pose.rz.toDouble()).toFloat()
         )
 
-        // Pose is sufficient for Android's tracker. Leave angular velocity at
-        // zero until the remaining AACP motion fields are fully identified.
-        return HeadPose(rx, ry, rz, discontinuityCounter = discontinuityCounter)
-    }
-
-    private fun calibrate() {
-        if (calibrationSamples.size < CALIBRATION_SAMPLE_COUNT) return
-        referenceOrientation = Quaternion(
-            w = calibrationSamples.sumOf { it.w },
-            x = calibrationSamples.sumOf { it.x },
-            y = calibrationSamples.sumOf { it.y },
-            z = calibrationSamples.sumOf { it.z }
-        ).normalized()
-    }
-
-    private fun decodeQuaternion(xRaw: Int, yRaw: Int, zRaw: Int): Quaternion {
-        val x = xRaw / QUATERNION_SCALE
-        val y = yRaw / QUATERNION_SCALE
-        val z = zRaw / QUATERNION_SCALE
-        val w = sqrt(max(0.0, 1.0 - x * x - y * y - z * z))
-        return Quaternion(w, x, y, z).normalized()
+        val now = System.nanoTime()
+        if (sample.diagnostics.recenterState != lastRecenterState ||
+            now - lastDiagnosticsLogNanos >= DIAGNOSTICS_INTERVAL_NANOS
+        ) {
+            Log.i(
+                TAG,
+                "pose rawYaw=%.1f outputYaw=%.1f speed=%.1f anchor=%.1f state=%s".format(
+                    sample.diagnostics.rawYawDegrees,
+                    sample.diagnostics.outputYawDegrees,
+                    sample.diagnostics.angularSpeedDegreesPerSecond,
+                    sample.diagnostics.anchorYawDegrees,
+                    sample.diagnostics.recenterState
+                )
+            )
+            lastDiagnosticsLogNanos = now
+            lastRecenterState = sample.diagnostics.recenterState
+        }
+        return sample.pose
     }
 
     private fun bytesToInt(b1: Byte, b2: Byte): Int {
@@ -156,10 +89,13 @@ object HeadTracking {
     }
 
     fun reset() {
-        calibrationSamples.clear()
-        referenceOrientation = null
-        discontinuityCounter = (discontinuityCounter + 1) and 0xFF
+        poseProcessor.reset()
+        lastDiagnosticsLogNanos = 0L
+        lastRecenterState = SpatialRecenterState.LOCKED
         _orientation.value = Orientation()
         _acceleration.value = Acceleration()
     }
+
+    private const val TAG = "SpatialHeadPose"
+    private const val DIAGNOSTICS_INTERVAL_NANOS = 2_000_000_000L
 }

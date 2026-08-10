@@ -13,6 +13,11 @@
     <string name="case_alt">Case</string>
     <string name="test">Test</string>
     <string name="name">Name</string>
+    <string name="heart_rate">Heart rate</string>
+    <string name="heart_rate_off">Off</string>
+    <string name="heart_rate_measuring">Measuring…</string>
+    <string name="heart_rate_live">Live</string>
+    <string name="bpm" translatable="false">BPM</string>
     <string name="noise_control">Listening Mode</string>
     <string name="off">Off</string>
     <string name="transparency">Transparency</string>

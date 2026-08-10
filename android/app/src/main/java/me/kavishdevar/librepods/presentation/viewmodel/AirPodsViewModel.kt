@@ -34,6 +34,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.BuildConfig
@@ -97,6 +98,10 @@ data class AirPodsUiState(
     val vendorIdHook: Boolean = false,
 
     val dynamicEndOfCharge: Boolean = false,
+
+    val heartRateEnabled: Boolean = false,
+    val heartRateStreaming: Boolean = false,
+    val heartRateBpm: Int? = null,
 
     val connectionSuccessful: Boolean = false,
     val timeUntilFOSSPremiumExpiry: Long = 0L,
@@ -216,6 +221,7 @@ class AirPodsViewModel(
         observeATT()
         observeSharedPreferences()
         observeBilling()
+        observeHeartRate()
         if (isDemoMode) activateDemoMode()
         isReady = true
     }
@@ -625,6 +631,7 @@ class AirPodsViewModel(
     }
 
     fun reconnectFromSavedMac() {
+        if (!::service.isInitialized) return
         service.reconnectFromSavedMac()
     }
 
@@ -640,6 +647,30 @@ class AirPodsViewModel(
     fun stopHeadTracking() {
         service.stopHeadTracking()
         _uiState.update { it.copy(headTrackingActive = false) }
+    }
+
+    fun setHeartRateMonitoringEnabled(enabled: Boolean) {
+        service.setHeartRateMonitoringEnabled(enabled)
+    }
+
+    private fun observeHeartRate() {
+        viewModelScope.launch {
+            combine(
+                service.heartRateProbeEnabled,
+                service.heartRateProbeStreaming,
+                service.heartRateSample
+            ) { enabled, streaming, sample ->
+                Triple(enabled, streaming, sample?.bpm)
+            }.collect { (enabled, streaming, bpm) ->
+                _uiState.update {
+                    it.copy(
+                        heartRateEnabled = enabled,
+                        heartRateStreaming = streaming,
+                        heartRateBpm = bpm
+                    )
+                }
+            }
+        }
     }
 
     fun setATTCharacteristicValue(handle: ATTHandles, value: ByteArray) {

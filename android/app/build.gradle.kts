@@ -1,6 +1,6 @@
 import java.util.Properties
 
-val appVersionName = "1.0.2"
+val appVersionName = "1.0.3"
 
 plugins {
     alias(libs.plugins.android.application)
@@ -49,7 +49,7 @@ android {
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
         targetSdk = 37
-        versionCode = 68
+        versionCode = 69
         versionName = appVersionName
     }
     buildTypes {
@@ -159,6 +159,7 @@ dependencies {
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(libs.androidx.navigationevent)
+    testImplementation("junit:junit:4.13.2")
 }
 
 aboutLibraries {

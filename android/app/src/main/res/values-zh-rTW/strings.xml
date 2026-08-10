@@ -13,6 +13,10 @@
     <string name="case_alt">充電盒</string>
     <string name="test">測試</string>
     <string name="name">名稱</string>
+    <string name="heart_rate">心率</string>
+    <string name="heart_rate_off">關閉</string>
+    <string name="heart_rate_measuring">正在測量…</string>
+    <string name="heart_rate_live">即時心率</string>
     <string name="noise_control">聽覺模式</string>
     <string name="off">關閉</string>
     <string name="transparency">通透模式</string>

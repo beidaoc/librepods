@@ -235,6 +235,7 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
+        fun onHeartRateReceived(sample: AirPodsHeartRateSample)
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -281,6 +282,7 @@ class AACPManager {
     }
 
     private var callback: PacketCallback? = null
+    private val heartRateProtocol = AirPodsHeartRateProtocol()
 
     fun setPacketCallback(callback: PacketCallback) {
         this.callback = callback
@@ -305,6 +307,16 @@ class AACPManager {
 
     fun sendDataPacket(data: ByteArray): Boolean {
         return sendPacket(createDataPacket(data))
+    }
+
+    fun sendHeartRateSampling(intervalMicros: Int): Boolean =
+        sendPacket(heartRateProtocol.createSamplingPacket(intervalMicros))
+
+    fun createHeartRateStartPackets(): List<ByteArray> =
+        heartRateProtocol.createStartPackets()
+
+    fun prepareHeartRateSamplingSession() {
+        heartRateProtocol.reset()
     }
 
     fun sendControlCommand(identifier: Byte, value: ByteArray): Boolean {
@@ -398,8 +410,23 @@ class AACPManager {
         return opcode + data
     }
 
+    fun receivePacket(packet: ByteArray): Boolean {
+        val routed = heartRateProtocol.route(packet)
+        if (routed.heartRateFrameCount > 0) {
+            Log.d(
+                TAG,
+                "Heart-rate protocol frames=${routed.heartRateFrameCount} " +
+                    "validatedSamples=${routed.samples.size}"
+            )
+            routed.diagnostics.forEach { Log.d(TAG, "Heart-rate frame $it") }
+        }
+        routed.samples.forEach { callback?.onHeartRateReceived(it) }
+        routed.passthroughPackets.forEach(::receiveStandardPacket)
+        return routed.suppressRawLogging
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
-    fun receivePacket(packet: ByteArray) {
+    private fun receiveStandardPacket(packet: ByteArray) {
         if (!packet.toHexString().startsWith("04000400")) {
             Log.w(
                 TAG, "Received packet does not start with expected header: ${
@@ -1281,6 +1308,7 @@ class AACPManager {
 
     fun disconnected() {
         Log.d(TAG, "Disconnected, clearing state")
+        heartRateProtocol.reset()
         controlCommandStatusList.clear()
         controlCommandListeners.clear()
         owns = false

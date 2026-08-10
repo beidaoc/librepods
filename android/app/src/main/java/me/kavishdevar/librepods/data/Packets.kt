@@ -239,8 +239,12 @@ class AirPodsNotifications {
             return dataHex.startsWith(prefixHex)
         }
 
-        fun setData(data: ByteArray) {
+        fun setData(data: ByteArray): Boolean {
+            if (!isConversationalAwarenessData(data)) {
+                return false
+            }
             status = data[9]
+            return true
         }
     }
 }

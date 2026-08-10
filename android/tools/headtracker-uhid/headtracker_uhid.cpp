@@ -13,12 +13,15 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iterator>
+#include <optional>
 #include <poll.h>
 #include <signal.h>
 #include <string>
 #include <unistd.h>
 
 namespace {
+
+using SteadyClock = std::chrono::steady_clock;
 
 constexpr char kDeviceName[] = "LibrePods Virtual Head Tracker";
 constexpr char kSensorDescription[] = "#AndroidHeadTracker#1.0";
@@ -199,15 +202,14 @@ public:
     }
 
     int run(bool stdinMode) {
-        using Clock = std::chrono::steady_clock;
-        const auto started = Clock::now();
+        const auto started = SteadyClock::now();
         auto nextPose = started;
         auto nextLog = started;
 
         while (gRunning) {
-            const auto now = Clock::now();
+            const auto now = SteadyClock::now();
             int timeoutMs = 1000;
-            if (!stdinMode && shouldReport()) {
+            if (shouldReport() && (!stdinMode || latestPose_.has_value())) {
                 timeoutMs = static_cast<int>(std::max<int64_t>(
                         0, std::chrono::duration_cast<std::chrono::milliseconds>(nextPose - now).count()));
             }
@@ -230,7 +232,30 @@ public:
                 if (!readPoseInput()) return 1;
             }
 
-            const auto afterPoll = Clock::now();
+            const auto afterPoll = SteadyClock::now();
+            if (stdinMode && shouldReport() && latestPose_.has_value() && afterPoll >= nextPose) {
+                const PoseSample& pose = *latestPose_;
+                const auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        afterPoll - pose.receivedAt).count();
+                const bool stale = ageMs > std::max<int64_t>(60, reportIntervalMs() * 3L);
+                if (!sendPose(pose.rx, pose.ry, pose.rz,
+                              stale ? 0.0 : pose.vx,
+                              stale ? 0.0 : pose.vy,
+                              stale ? 0.0 : pose.vz,
+                              pose.discontinuityCounter)) return 1;
+                ++reportedPoseCount_;
+                nextPose = afterPoll + std::chrono::milliseconds(reportIntervalMs());
+
+                if (afterPoll >= nextLog) {
+                    std::fprintf(stderr,
+                                 "stream poses received=%llu reported=%llu age=%lld ms "
+                                 "interval=%d ms stale=%d\n",
+                                 static_cast<unsigned long long>(receivedPoseCount_),
+                                 static_cast<unsigned long long>(reportedPoseCount_),
+                                 static_cast<long long>(ageMs), reportIntervalMs(), stale);
+                    nextLog = afterPoll + std::chrono::seconds(2);
+                }
+            }
             if (!stdinMode && shouldReport() && afterPoll >= nextPose) {
                 const double seconds = std::chrono::duration<double>(afterPoll - started).count();
                 // A slow +/- 0.6 rad yaw motion, rotating about the head's Z axis.
@@ -336,10 +361,8 @@ private:
             }
 
             discontinuityCounter_ = static_cast<uint8_t>(counter & 0xFF);
-            if (shouldReport()
-                    && !sendPose(rx, ry, rz, vx, vy, vz, discontinuityCounter_)) {
-                return false;
-            }
+            latestPose_ = PoseSample{
+                    rx, ry, rz, vx, vy, vz, discontinuityCounter_, SteadyClock::now()};
             ++receivedPoseCount_;
             if (receivedPoseCount_ == 1 || receivedPoseCount_ % 200 == 0) {
                 std::fprintf(stderr,
@@ -458,7 +481,19 @@ private:
     uint8_t reportIntervalRaw_ = 7;  // 20 ms after physical scaling.
     uint8_t discontinuityCounter_ = 0;
     uint64_t receivedPoseCount_ = 0;
+    uint64_t reportedPoseCount_ = 0;
     std::string poseInputBuffer_;
+    struct PoseSample {
+        double rx;
+        double ry;
+        double rz;
+        double vx;
+        double vy;
+        double vz;
+        uint8_t discontinuityCounter;
+        SteadyClock::time_point receivedAt;
+    };
+    std::optional<PoseSample> latestPose_;
     std::array<uint8_t, 6> mac_{};
     std::array<uint8_t, 16> uniqueId_{};
 };
