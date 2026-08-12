@@ -26,6 +26,7 @@ data class HeartRateRouteResult(
     val passthroughPackets: List<ByteArray> = emptyList(),
     val suppressRawLogging: Boolean = false,
     val heartRateFrameCount: Int = 0,
+    val serviceSettingAcknowledgementCount: Int = 0,
     val diagnostics: List<String> = emptyList()
 )
 
@@ -102,6 +103,7 @@ class AirPodsHeartRateProtocol {
         val passthrough = mutableListOf<ByteArray>()
         var suppressRawLogging = false
         var heartRateFrameCount = 0
+        var serviceSettingAcknowledgementCount = 0
         val diagnostics = mutableListOf<String>()
         var cursor = 0
 
@@ -153,6 +155,9 @@ class AirPodsHeartRateProtocol {
                 heartRateFrameCount++
                 decoded.diagnostic?.let(diagnostics::add)
                 decoded.sample?.let(samples::add)
+                if (decoded.serviceSettingAcknowledged) {
+                    serviceSettingAcknowledgementCount++
+                }
             } else {
                 passthrough += frame
             }
@@ -164,6 +169,7 @@ class AirPodsHeartRateProtocol {
             passthroughPackets = passthrough,
             suppressRawLogging = suppressRawLogging,
             heartRateFrameCount = heartRateFrameCount,
+            serviceSettingAcknowledgementCount = serviceSettingAcknowledgementCount,
             diagnostics = diagnostics
         )
     }
@@ -199,8 +205,15 @@ class AirPodsHeartRateProtocol {
         val diagnostic = "seq=$sequence state=$logType setting=${directServices[8]} " +
             "command=${directServices[7]} commandBytes=${commandPayloadLength ?: 0} " +
             "startAck=${directServices[9]} commandAck=${directServices[12]}"
+        val serviceSettingAcknowledged =
+            directServices[9] == HEART_RATE_SERVICE ||
+                directServices[12] == HEART_RATE_SERVICE
         if (logType !in LIVE_LOG_TYPES) {
-            return DecodedFrame(relatedToHeartRate = true, diagnostic = diagnostic)
+            return DecodedFrame(
+                relatedToHeartRate = true,
+                diagnostic = diagnostic,
+                serviceSettingAcknowledged = serviceSettingAcknowledged
+            )
         }
 
         val candidates = mutableListOf<ByteArray>()
@@ -213,12 +226,17 @@ class AirPodsHeartRateProtocol {
         }
 
         val payload = candidates.firstOrNull(::isValidatedHeartRatePayload)
-            ?: return DecodedFrame(relatedToHeartRate = true, diagnostic = diagnostic)
+            ?: return DecodedFrame(
+                relatedToHeartRate = true,
+                diagnostic = diagnostic,
+                serviceSettingAcknowledged = serviceSettingAcknowledged
+            )
         val statusOffset = payload.size - STATUS_TAIL_LENGTH
         val statusTail = payload.readUnsignedLe24(statusOffset)
         return DecodedFrame(
             relatedToHeartRate = true,
             diagnostic = diagnostic,
+            serviceSettingAcknowledged = serviceSettingAcknowledged,
             sample = AirPodsHeartRateSample(
                 bpm = payload[BPM_OFFSET].toInt() and 0xFF,
                 sequence = sequence,
@@ -366,6 +384,7 @@ class AirPodsHeartRateProtocol {
     private data class DecodedFrame(
         val relatedToHeartRate: Boolean = false,
         val diagnostic: String? = null,
+        val serviceSettingAcknowledged: Boolean = false,
         val sample: AirPodsHeartRateSample? = null
     )
 

@@ -27,6 +27,44 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.io.encoding.ExperimentalEncodingApi
 
+internal data class SmartRoutingPlaybackState(
+    val hostStreaming: Boolean?,
+    val otherDeviceAudioCategory: Int?,
+    val playingAppActive: Boolean?
+) {
+    val hasRemotePlaybackIntent: Boolean?
+        get() = when {
+            hostStreaming == true -> true
+            otherDeviceAudioCategory != null -> otherDeviceAudioCategory > 0
+            playingAppActive != null -> playingAppActive
+            hostStreaming != null -> false
+            else -> null
+        }
+}
+
+internal fun parseSmartRoutingPlaybackState(packetString: String): SmartRoutingPlaybackState {
+    val hostStreaming = HOST_STREAMING_STATE_REGEX.find(packetString)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.equals("YES", ignoreCase = true)
+    val audioCategory = OTHER_DEVICE_AUDIO_CATEGORY_REGEX.find(packetString)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+    val playingAppActive = PLAYING_APP_REGEX.find(packetString)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.let { value -> value.isNotBlank() && !value.equals("NA", ignoreCase = true) }
+    return SmartRoutingPlaybackState(hostStreaming, audioCategory, playingAppActive)
+}
+
+private val HOST_STREAMING_STATE_REGEX =
+    Regex("hostStreamingState[A-Z]?(YES|NO)", RegexOption.IGNORE_CASE)
+private val OTHER_DEVICE_AUDIO_CATEGORY_REGEX =
+    Regex("otherDeviceAudioCategory([0-9])", RegexOption.IGNORE_CASE)
+private val PLAYING_APP_REGEX =
+    Regex("playingApp.(.*?).hostStreamingState", RegexOption.IGNORE_CASE)
+
 /**
  * Manager class for Apple Accessory Communication Protocol (AACP)
  * This class is responsible for handling the L2CAP socket management,
@@ -120,6 +158,11 @@ class AACPManager {
             }
         }
 
+        internal fun shouldApplyControlStatusImmediately(
+            identifier: ControlCommandIdentifiers,
+            confirmedByAirPods: Boolean
+        ): Boolean = identifier != ControlCommandIdentifiers.OWNS_CONNECTION || confirmedByAirPods
+
         enum class ProximityKeyType(val value: Byte) {
             IRK(0x01), ENC_KEY(0x04);
 
@@ -212,8 +255,14 @@ class AACPManager {
     }
 
     private fun setControlCommandStatusValue(
-        identifier: ControlCommandIdentifiers, value: ByteArray
+        identifier: ControlCommandIdentifiers,
+        value: ByteArray,
+        confirmedByAirPods: Boolean = false
     ) {
+        if (!shouldApplyControlStatusImmediately(identifier, confirmedByAirPods)) {
+            Log.d(TAG, "Waiting for AirPods to confirm ownership=$value")
+            return
+        }
         val existingStatus = getControlCommandStatus(identifier)
         if (existingStatus?.value.contentEquals(value)) {
             controlCommandStatusList.remove(existingStatus)
@@ -236,6 +285,7 @@ class AACPManager {
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
         fun onHeartRateReceived(sample: AirPodsHeartRateSample)
+        fun onHeartRateServiceSettingAcknowledged()
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -421,6 +471,9 @@ class AACPManager {
             routed.diagnostics.forEach { Log.d(TAG, "Heart-rate frame $it") }
         }
         routed.samples.forEach { callback?.onHeartRateReceived(it) }
+        repeat(routed.serviceSettingAcknowledgementCount) {
+            callback?.onHeartRateServiceSettingAcknowledged()
+        }
         routed.passthroughPackets.forEach(::receiveStandardPacket)
         return routed.suppressRawLogging
     }
@@ -458,7 +511,8 @@ class AACPManager {
                 }
                 setControlCommandStatusValue(
                     ControlCommandIdentifiers.fromByte(controlCommand.identifier) ?: return,
-                    controlCommand.value
+                    controlCommand.value,
+                    confirmedByAirPods = true
                 )
                 Log.d(
                     TAG,
@@ -575,13 +629,16 @@ class AACPManager {
                     TAG,
                     "Smart Routing Response from $sender: $packetString, type: ${connectedDevices.find { it.mac == sender }?.type}"
                 )
-                if (packetString.contains("hostStreamingState")) {
-                    when {
-                        packetString.contains("YES") ->
-                            callback?.onRemoteStreamingStateChanged(sender, true)
-                        packetString.contains("NO") ->
-                            callback?.onRemoteStreamingStateChanged(sender, false)
-                    }
+                val playbackState = parseSmartRoutingPlaybackState(packetString)
+                playbackState.hasRemotePlaybackIntent?.let { hasPlaybackIntent ->
+                    Log.d(
+                        TAG,
+                        "Smart Routing playback state hostStreaming=${playbackState.hostStreaming} " +
+                            "otherDeviceAudioCategory=${playbackState.otherDeviceAudioCategory} " +
+                            "playingAppActive=${playbackState.playingAppActive} " +
+                            "playbackIntent=$hasPlaybackIntent"
+                    )
+                    callback?.onRemoteStreamingStateChanged(sender, hasPlaybackIntent)
                 }
                 if (packetString.contains("SetOwnershipToFalse")) {
                     callback?.onOwnershipToFalseRequest(

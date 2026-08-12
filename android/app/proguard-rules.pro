@@ -31,6 +31,11 @@
     public <methods>;
 }
 -keep class me.kavishdevar.librepods.xiaomifix.resolve.** { *; }
+-keep,allowoptimization class me.kavishdevar.librepods.keepbridge.KeepHeartRateModule {
+    <init>();
+    public <methods>;
+}
+-keep class me.kavishdevar.librepods.keepbridge.KeepHeartRateState { *; }
 -keep class org.luckypray.dexkit.** { *; }
 -keepattributes InnerClasses,EnclosingMethod,Signature,Exceptions
 -dontwarn org.luckypray.dexkit.**

@@ -2,6 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <permission
+        android:name="me.kavishdevar.librepods.permission.HEART_RATE_BRIDGE"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="me.kavishdevar.librepods.permission.HEART_RATE_BRIDGE" />
+
+    <queries>
+        <package android:name="com.gotokeep.keep" />
+    </queries>
+
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />

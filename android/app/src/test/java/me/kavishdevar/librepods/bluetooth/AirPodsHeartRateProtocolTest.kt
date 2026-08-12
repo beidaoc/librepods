@@ -126,6 +126,34 @@ class AirPodsHeartRateProtocolTest {
         assertTrue(result.samples.isEmpty())
     }
 
+    @Test
+    fun serviceSettingAcknowledgementIsExposedForOrderlyStop() {
+        val command = fieldVarint(1, 20)
+        val frame = wrapSensorPayload(
+            fieldVarint(1, 94) + fieldVarint(2, 1) + fieldBytes(9, command)
+        )
+
+        val result = AirPodsHeartRateProtocol().route(frame)
+
+        assertEquals(1, result.heartRateFrameCount)
+        assertEquals(1, result.serviceSettingAcknowledgementCount)
+        assertTrue(result.samples.isEmpty())
+    }
+
+    @Test
+    fun commandAcknowledgementIsExposedForOrderlyStop() {
+        val command = fieldVarint(1, 20)
+        val frame = wrapSensorPayload(
+            fieldVarint(1, 95) + fieldVarint(2, 1) + fieldBytes(12, command)
+        )
+
+        val result = AirPodsHeartRateProtocol().route(frame)
+
+        assertEquals(1, result.heartRateFrameCount)
+        assertEquals(1, result.serviceSettingAcknowledgementCount)
+        assertTrue(result.samples.isEmpty())
+    }
+
     private fun heartRateFrame(
         bpm: Int,
         sequence: Int,
