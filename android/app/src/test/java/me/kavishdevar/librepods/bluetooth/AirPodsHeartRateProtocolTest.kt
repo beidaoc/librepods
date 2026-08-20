@@ -37,8 +37,12 @@ class AirPodsHeartRateProtocolTest {
 
     @Test
     fun ios27StartSequenceMatchesFourHidFeatureReports() {
-        val packets = AirPodsHeartRateProtocol().createStartPackets()
+        val protocol = AirPodsHeartRateProtocol()
+        val resolution = protocol.prepareSamplingSession()
+        val packets = protocol.createStartPackets()
 
+        assertEquals(20, resolution.serviceId)
+        assertEquals(HeartRateServiceResolution.Source.IOS27_FALLBACK, resolution.source)
         assertEquals(4, packets.size)
         packets.forEach { assertEquals(27, it.size) }
         assertArrayEquals(
@@ -73,6 +77,7 @@ class AirPodsHeartRateProtocolTest {
         assertEquals(72, result.samples.single().bpm)
         assertEquals(91L, result.samples.single().sequence)
         assertEquals(0x800220, result.samples.single().statusTail)
+        assertEquals(20, result.samples.single().service)
     }
 
     @Test
@@ -86,14 +91,123 @@ class AirPodsHeartRateProtocolTest {
     }
 
     @Test
-    fun legacyService19FrameIsReturnedToExistingParser() {
+    fun legacyService19FrameProducesValidatedSampleWhenNoServiceWasResolved() {
         val result = AirPodsHeartRateProtocol().route(
             heartRateFrame(bpm = 72, sequence = 93, service = 19)
         )
 
-        assertFalse(result.suppressRawLogging)
-        assertTrue(result.samples.isEmpty())
-        assertEquals(1, result.passthroughPackets.size)
+        assertTrue(result.suppressRawLogging)
+        assertEquals(72, result.samples.single().bpm)
+        assertEquals(19, result.samples.single().service)
+        assertEquals(0, result.passthroughPackets.size)
+    }
+
+    @Test
+    fun ios26MetadataSelectsService19ForStartAndStop() {
+        val protocol = AirPodsHeartRateProtocol()
+
+        val metadata = protocol.route(serviceMetadataFrame(19, "HeartRateService"))
+        val resolution = protocol.prepareSamplingSession()
+        val startPackets = protocol.createStartPackets()
+        val start = startPackets.first()
+        val stop = protocol.createSamplingPacket(0)
+
+        assertTrue(metadata.suppressRawLogging)
+        assertEquals(19, metadata.serviceResolutionChanged?.serviceId)
+        assertEquals(HeartRateServiceResolution.Source.METADATA, resolution.source)
+        assertEquals(1, startPackets.size)
+        assertTrue(start.containsSubsequence(byteArrayOf(0x08, 0x13, 0x10, 0x02)))
+        assertTrue(stop.containsSubsequence(byteArrayOf(0x08, 0x13, 0x10, 0x02)))
+    }
+
+    @Test
+    fun ios27MetadataExcludesHostLibHidService19AndSelectsService20() {
+        val protocol = AirPodsHeartRateProtocol()
+        val metadata = serviceMetadataFrame(19, "HostLibHID") +
+            serviceMetadataFrame(20, "HeartRateService")
+
+        val routed = protocol.route(metadata)
+        val resolution = protocol.prepareSamplingSession()
+        val start = protocol.createStartPackets().first()
+
+        assertTrue(routed.suppressRawLogging)
+        assertEquals(20, resolution.serviceId)
+        assertEquals(HeartRateServiceResolution.Source.METADATA, resolution.source)
+        assertTrue(start.containsSubsequence(byteArrayOf(0x08, 0x14, 0x10, 0x02)))
+    }
+
+    @Test
+    fun serviceMetadataCanSpanMultipleSocketReads() {
+        val protocol = AirPodsHeartRateProtocol()
+        val frame = serviceMetadataFrame(19, "HeartRateService")
+
+        val first = protocol.route(frame.copyOfRange(0, 9))
+        val second = protocol.route(frame.copyOfRange(9, frame.size))
+
+        assertTrue(first.suppressRawLogging)
+        assertEquals(19, second.serviceResolutionChanged?.serviceId)
+        assertEquals(19, protocol.prepareSamplingSession().serviceId)
+    }
+
+    @Test
+    fun firstSampleTimeoutFallsBackFromIos27Service20ToIos26Service19() {
+        val protocol = AirPodsHeartRateProtocol()
+        val first = protocol.prepareSamplingSession()
+        val firstStart = protocol.createStartPackets().first()
+        val firstStop = protocol.createSamplingPacket(0)
+
+        val fallback = protocol.advanceFallbackAfterFirstSampleTimeout()
+        val second = protocol.prepareSamplingSession()
+        val secondStart = protocol.createStartPackets().first()
+
+        assertEquals(20, first.serviceId)
+        assertTrue(firstStart.containsSubsequence(byteArrayOf(0x08, 0x14, 0x10, 0x02)))
+        assertTrue(firstStop.containsSubsequence(byteArrayOf(0x08, 0x14, 0x10, 0x02)))
+        assertEquals(19, fallback.serviceId)
+        assertEquals(HeartRateServiceResolution.Source.IOS26_FALLBACK, fallback.source)
+        assertEquals(19, second.serviceId)
+        assertTrue(secondStart.containsSubsequence(byteArrayOf(0x08, 0x13, 0x10, 0x02)))
+    }
+
+    @Test
+    fun metadataChangeDoesNotRedirectStopForActiveSession() {
+        val protocol = AirPodsHeartRateProtocol()
+        protocol.prepareSamplingSession()
+        protocol.createStartPackets()
+
+        protocol.route(serviceMetadataFrame(19, "HeartRateService"))
+        val stop = protocol.createSamplingPacket(0)
+
+        assertTrue(stop.containsSubsequence(byteArrayOf(0x08, 0x14, 0x10, 0x02)))
+        assertFalse(stop.containsSubsequence(byteArrayOf(0x08, 0x13, 0x10, 0x02)))
+    }
+
+    @Test
+    fun legacyDiscoveryCanRefreshPreparedFallbackBeforeStart() {
+        val protocol = AirPodsHeartRateProtocol()
+        protocol.prepareSamplingSession()
+        protocol.advanceFallbackAfterFirstSampleTimeout()
+        assertEquals(19, protocol.prepareSamplingSession().serviceId)
+
+        protocol.route(serviceMetadataFrame(20, "HeartRateService"))
+        val refreshed = protocol.refreshPreparedServiceResolution()
+        val packets = protocol.createStartPackets()
+
+        assertEquals(20, refreshed.serviceId)
+        assertEquals(HeartRateServiceResolution.Source.METADATA, refreshed.source)
+        assertEquals(4, packets.size)
+        assertTrue(packets.first().containsSubsequence(byteArrayOf(0x08, 0x14, 0x10, 0x02)))
+    }
+
+    @Test
+    fun legacyIos26StatusTailIsAccepted() {
+        val result = AirPodsHeartRateProtocol().route(
+            heartRateFrame(bpm = 68, sequence = 94, statusTail = 0x800010, service = 19)
+        )
+
+        assertEquals(68, result.samples.single().bpm)
+        assertEquals(19, result.samples.single().service)
+        assertEquals(0x800010, result.samples.single().statusTail)
     }
 
     @Test
@@ -174,6 +288,11 @@ class AirPodsHeartRateProtocolTest {
     private fun sensorFrame(service: Int, payload: ByteArray): ByteArray {
         val command = fieldVarint(1, service) + fieldVarint(2, 2) + fieldBytes(3, payload)
         return wrapSensorPayload(fieldVarint(1, 1) + fieldVarint(2, 3) + fieldBytes(8, command))
+    }
+
+    private fun serviceMetadataFrame(service: Int, marker: String): ByteArray {
+        val record = fieldVarint(1, service) + fieldBytes(2, marker.encodeToByteArray())
+        return wrapSensorPayload(fieldVarint(1, 1) + fieldBytes(5, record))
     }
 
     private fun wrapSensorPayload(payload: ByteArray): ByteArray =

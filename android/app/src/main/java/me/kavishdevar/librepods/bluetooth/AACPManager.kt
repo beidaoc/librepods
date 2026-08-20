@@ -100,6 +100,20 @@ class AACPManager {
 
         private val HEADER_BYTES = byteArrayOf(0x04, 0x00, 0x04, 0x00)
 
+        // AACP 1.3 service discovery used by the legacy iOS 26 heart-rate path.
+        private val HEART_RATE_CONNECT_SERVICE_0 = byteArrayOf(
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        )
+        private val HEART_RATE_CAPABILITIES_SERVICE_0 =
+            byteArrayOf(0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00)
+        private val HEART_RATE_CONNECT_SERVICE_4 = byteArrayOf(
+            0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x03, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        )
+        private val HEART_RATE_CAPABILITIES_SERVICE_4 =
+            byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00)
+
         data class ControlCommandStatus(
             val identifier: ControlCommandIdentifiers, val value: ByteArray
         ) {
@@ -359,15 +373,44 @@ class AACPManager {
         return sendPacket(createDataPacket(data))
     }
 
-    fun sendHeartRateSampling(intervalMicros: Int): Boolean =
-        sendPacket(heartRateProtocol.createSamplingPacket(intervalMicros))
+    fun sendHeartRateSampling(intervalMicros: Int): Boolean {
+        val resolution = heartRateProtocol.currentServiceResolution()
+        if (resolution.serviceId == null) {
+            Log.w(TAG, "No compatible RTBuddy heart-rate service; sampling control skipped")
+            return false
+        }
+        Log.d(
+            TAG,
+            "Sending heart-rate sampling interval=$intervalMicros service=${resolution.serviceId} " +
+                "source=${resolution.source}"
+        )
+        return sendPacket(heartRateProtocol.createSamplingPacket(intervalMicros))
+    }
 
     fun createHeartRateStartPackets(): List<ByteArray> =
         heartRateProtocol.createStartPackets()
 
-    fun prepareHeartRateSamplingSession() {
-        heartRateProtocol.reset()
-    }
+    fun prepareHeartRateSamplingSession(): HeartRateServiceResolution =
+        heartRateProtocol.prepareSamplingSession()
+
+    fun currentHeartRateServiceResolution(): HeartRateServiceResolution =
+        heartRateProtocol.currentServiceResolution()
+
+    fun refreshPreparedHeartRateServiceResolution(): HeartRateServiceResolution =
+        heartRateProtocol.refreshPreparedServiceResolution()
+
+    fun advanceHeartRateServiceFallback(): HeartRateServiceResolution =
+        heartRateProtocol.advanceFallbackAfterFirstSampleTimeout()
+
+    fun sendHeartRateConnectService0(): Boolean = sendPacket(HEART_RATE_CONNECT_SERVICE_0)
+
+    fun sendHeartRateCapabilitiesService0(): Boolean =
+        sendPacket(HEART_RATE_CAPABILITIES_SERVICE_0)
+
+    fun sendHeartRateConnectService4(): Boolean = sendPacket(HEART_RATE_CONNECT_SERVICE_4)
+
+    fun sendHeartRateCapabilitiesService4(): Boolean =
+        sendPacket(HEART_RATE_CAPABILITIES_SERVICE_4)
 
     fun sendControlCommand(identifier: Byte, value: ByteArray): Boolean {
         val controlPacket = createControlCommandPacket(identifier, value)
@@ -462,6 +505,13 @@ class AACPManager {
 
     fun receivePacket(packet: ByteArray): Boolean {
         val routed = heartRateProtocol.route(packet)
+        routed.serviceResolutionChanged?.let { resolution ->
+            Log.i(
+                TAG,
+                "RTBuddy heart-rate service resolved service=${resolution.serviceId} " +
+                    "source=${resolution.source}"
+            )
+        }
         if (routed.heartRateFrameCount > 0) {
             Log.d(
                 TAG,

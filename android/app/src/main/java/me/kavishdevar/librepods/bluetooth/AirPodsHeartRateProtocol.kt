@@ -18,8 +18,22 @@ data class AirPodsHeartRateSample(
     val bpm: Int,
     val sequence: Long,
     val receivedAtMillis: Long,
-    val statusTail: Int
+    val statusTail: Int,
+    val service: Int
 )
+
+data class HeartRateServiceResolution(
+    val serviceId: Int?,
+    val source: Source
+) {
+    enum class Source {
+        METADATA,
+        VALIDATED_SAMPLE,
+        IOS27_FALLBACK,
+        IOS26_FALLBACK,
+        UNAVAILABLE
+    }
+}
 
 data class HeartRateRouteResult(
     val samples: List<AirPodsHeartRateSample> = emptyList(),
@@ -27,6 +41,7 @@ data class HeartRateRouteResult(
     val suppressRawLogging: Boolean = false,
     val heartRateFrameCount: Int = 0,
     val serviceSettingAcknowledgementCount: Int = 0,
+    val serviceResolutionChanged: HeartRateServiceResolution? = null,
     val diagnostics: List<String> = emptyList()
 )
 
@@ -40,11 +55,61 @@ data class HeartRateRouteResult(
 class AirPodsHeartRateProtocol {
     private var pending = ByteArray(0)
     private var nextSequence = INITIAL_SEQUENCE
+    private var discoveredHeartRateService: Int? = null
+    private var confirmedHeartRateService: Int? = null
+    private var activeSessionService: Int? = null
+    private var fallbackServiceIndex = 0
+    private val explicitlyNonHeartRateServices = mutableSetOf<Int>()
 
     @Synchronized
     fun reset() {
         pending = ByteArray(0)
         nextSequence = INITIAL_SEQUENCE
+        discoveredHeartRateService = null
+        confirmedHeartRateService = null
+        activeSessionService = null
+        fallbackServiceIndex = 0
+        explicitlyNonHeartRateServices.clear()
+    }
+
+    /** Starts a new sampling attempt without discarding metadata learned for this connection. */
+    @Synchronized
+    fun prepareSamplingSession(): HeartRateServiceResolution {
+        pending = ByteArray(0)
+        nextSequence = INITIAL_SEQUENCE
+        activeSessionService = resolvedServiceForNextAttempt()
+        return currentServiceResolution()
+    }
+
+    /**
+     * Tries the legacy iOS 26 service only after the verified iOS 27 service produced no samples.
+     * Metadata or a previously validated sample always wins over this fallback order.
+     */
+    @Synchronized
+    fun advanceFallbackAfterFirstSampleTimeout(): HeartRateServiceResolution {
+        if (confirmedHeartRateService == null && discoveredHeartRateService == null) {
+            val current = activeSessionService
+            val currentIndex = HEART_RATE_SERVICE_FALLBACKS.indexOf(current)
+            if (currentIndex >= 0 && currentIndex < HEART_RATE_SERVICE_FALLBACKS.lastIndex) {
+                fallbackServiceIndex = currentIndex + 1
+            }
+        }
+        activeSessionService = null
+        val nextService = resolvedServiceForNextAttempt()
+        return HeartRateServiceResolution(nextService, resolutionSource(nextService))
+    }
+
+    @Synchronized
+    fun currentServiceResolution(): HeartRateServiceResolution {
+        val service = activeSessionService ?: resolvedServiceForNextAttempt()
+        return HeartRateServiceResolution(service, resolutionSource(service))
+    }
+
+    /** Re-evaluates a prepared attempt after asynchronous AACP metadata has arrived. */
+    @Synchronized
+    fun refreshPreparedServiceResolution(): HeartRateServiceResolution {
+        activeSessionService = resolvedServiceForNextAttempt()
+        return currentServiceResolution()
     }
 
     /** Builds one SensorDataWX feature-report write. */
@@ -72,7 +137,13 @@ class AirPodsHeartRateProtocol {
      * is expressed in microseconds.
      */
     fun createSamplingPacket(intervalMicros: Int): ByteArray =
-        createServiceSettingPacket(HEART_RATE_SERVICE, REPORT_INTERVAL, intervalMicros)
+        createServiceSettingPacket(
+            requireNotNull(activeSessionService ?: resolvedServiceForNextAttempt()) {
+                "No compatible RTBuddy heart-rate service is available"
+            },
+            REPORT_INTERVAL,
+            intervalMicros
+        )
 
     /**
      * Apple starts HRM together with DEVMOTION6. The order and values below were independently
@@ -81,18 +152,25 @@ class AirPodsHeartRateProtocol {
     fun createStartPackets(
         heartRateIntervalMicros: Int = 1_000_000,
         motionIntervalMicros: Int = 20_000
-    ): List<ByteArray> = listOf(
-        createServiceSettingPacket(
-            HEART_RATE_SERVICE,
+    ): List<ByteArray> {
+        val heartRateService = activeSessionService ?: resolvedServiceForNextAttempt()
+            ?: return emptyList()
+        activeSessionService = heartRateService
+        val heartRateStart = createServiceSettingPacket(
+            heartRateService,
             REPORT_INTERVAL,
             heartRateIntervalMicros
-        ),
-        createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_MAX_FIFO_EVENTS, 10),
-        createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_INTERVAL, motionIntervalMicros),
-        createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_BATCH_INTERVAL, 1)
-    )
+        )
+        if (heartRateService == IOS26_HEART_RATE_SERVICE) return listOf(heartRateStart)
+        return listOf(
+            heartRateStart,
+            createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_MAX_FIFO_EVENTS, 10),
+            createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_INTERVAL, motionIntervalMicros),
+            createServiceSettingPacket(DEVMOTION6_SERVICE, REPORT_BATCH_INTERVAL, 1)
+        )
+    }
 
-    /** Routes arbitrary socket chunks, extracting only validated service-20 live samples. */
+    /** Routes arbitrary socket chunks, extracting validated iOS 26/27 heart-rate samples. */
     @Synchronized
     fun route(chunk: ByteArray): HeartRateRouteResult {
         if (chunk.isEmpty()) return HeartRateRouteResult()
@@ -104,6 +182,7 @@ class AirPodsHeartRateProtocol {
         var suppressRawLogging = false
         var heartRateFrameCount = 0
         var serviceSettingAcknowledgementCount = 0
+        var serviceResolutionChanged: HeartRateServiceResolution? = null
         val diagnostics = mutableListOf<String>()
         var cursor = 0
 
@@ -149,7 +228,12 @@ class AirPodsHeartRateProtocol {
             }
 
             val frame = input.copyOfRange(frameStart, frameStart + frameLength)
-            val decoded = decodeHeartRateFrame(frame)
+            val metadata = updateServiceMetadata(frame)
+            if (metadata != null) {
+                metadata.changedResolution?.let { serviceResolutionChanged = it }
+                suppressRawLogging = true
+            }
+            val decoded = decodeHeartRateFrame(frame, metadata != null)
             if (decoded.relatedToHeartRate) {
                 suppressRawLogging = true
                 heartRateFrameCount++
@@ -170,11 +254,12 @@ class AirPodsHeartRateProtocol {
             suppressRawLogging = suppressRawLogging,
             heartRateFrameCount = heartRateFrameCount,
             serviceSettingAcknowledgementCount = serviceSettingAcknowledgementCount,
+            serviceResolutionChanged = serviceResolutionChanged,
             diagnostics = diagnostics
         )
     }
 
-    private fun decodeHeartRateFrame(frame: ByteArray): DecodedFrame {
+    private fun decodeHeartRateFrame(frame: ByteArray, containsServiceMetadata: Boolean): DecodedFrame {
         val payloadStart = FULL_SENSOR_HEADER_LENGTH
         val top = parseMessage(frame, payloadStart, frame.size) ?: return DecodedFrame()
         val sequence = top.firstVarint(1) ?: -1L
@@ -193,8 +278,15 @@ class AirPodsHeartRateProtocol {
                 collectCommandMessages(frame, entry.valueStart, entry.valueEnd, 0, commands)
             }
 
-        val heartRateCommands = commands.filter { it.firstVarint(1) == HEART_RATE_SERVICE.toLong() }
-        if (heartRateCommands.isEmpty()) return DecodedFrame()
+        val heartRateCommands = commands.filter { command ->
+            command.firstVarint(1)?.toInt()?.let(::isHeartRateService) == true
+        }
+        if (heartRateCommands.isEmpty()) {
+            return DecodedFrame(relatedToHeartRate = containsServiceMetadata)
+        }
+        val frameService = heartRateCommands.firstNotNullOfOrNull {
+            it.firstVarint(1)?.toInt()
+        } ?: return DecodedFrame(relatedToHeartRate = containsServiceMetadata)
         val commandPayloadLength = top.entries.firstOrNull {
             it.field == 7 && it.wireType == WIRE_LENGTH
         }?.let { commandEntry ->
@@ -206,8 +298,8 @@ class AirPodsHeartRateProtocol {
             "command=${directServices[7]} commandBytes=${commandPayloadLength ?: 0} " +
             "startAck=${directServices[9]} commandAck=${directServices[12]}"
         val serviceSettingAcknowledged =
-            directServices[9] == HEART_RATE_SERVICE ||
-                directServices[12] == HEART_RATE_SERVICE
+            directServices[9]?.let(::isHeartRateService) == true ||
+                directServices[12]?.let(::isHeartRateService) == true
         if (logType !in LIVE_LOG_TYPES) {
             return DecodedFrame(
                 relatedToHeartRate = true,
@@ -233,6 +325,7 @@ class AirPodsHeartRateProtocol {
             )
         val statusOffset = payload.size - STATUS_TAIL_LENGTH
         val statusTail = payload.readUnsignedLe24(statusOffset)
+        if (confirmedHeartRateService == null) confirmedHeartRateService = frameService
         return DecodedFrame(
             relatedToHeartRate = true,
             diagnostic = diagnostic,
@@ -241,9 +334,74 @@ class AirPodsHeartRateProtocol {
                 bpm = payload[BPM_OFFSET].toInt() and 0xFF,
                 sequence = sequence,
                 receivedAtMillis = System.currentTimeMillis(),
-                statusTail = statusTail
+                statusTail = statusTail,
+                service = frameService
             )
         )
+    }
+
+    private fun updateServiceMetadata(frame: ByteArray): ServiceMetadataResult? {
+        val top = parseMessage(frame, FULL_SENSOR_HEADER_LENGTH, frame.size) ?: return null
+        var changed = false
+        var relevant = false
+        top.entries.filter { it.wireType == WIRE_LENGTH }.forEach { entry ->
+            val record = parseMessage(frame, entry.valueStart, entry.valueEnd) ?: return@forEach
+            val service = record.firstVarint(1)?.toInt() ?: return@forEach
+            val metadata = record.entries.filter { it.field == 2 && it.wireType == WIRE_LENGTH }
+            if (metadata.isEmpty()) return@forEach
+
+            val identifiesHeartRate = metadata.any {
+                frame.containsBytes(HEART_RATE_SERVICE_MARKER, it.valueStart, it.valueEnd)
+            }
+            val identifiesHostLibHid = metadata.any {
+                frame.containsBytes(HOST_LIB_HID_MARKER, it.valueStart, it.valueEnd)
+            }
+            relevant = relevant || identifiesHeartRate || identifiesHostLibHid
+            when {
+                identifiesHostLibHid -> {
+                    changed = explicitlyNonHeartRateServices.add(service) || changed
+                    if (discoveredHeartRateService == service) {
+                        discoveredHeartRateService = null
+                        changed = true
+                    }
+                }
+
+                identifiesHeartRate && service in SUPPORTED_HEART_RATE_SERVICES &&
+                    service !in explicitlyNonHeartRateServices -> {
+                    if (discoveredHeartRateService != service) {
+                        discoveredHeartRateService = service
+                        changed = true
+                    }
+                }
+            }
+        }
+        if (!relevant) return null
+        return ServiceMetadataResult(
+            changedResolution = currentServiceResolution().takeIf { changed }
+        )
+    }
+
+    private fun isHeartRateService(service: Int): Boolean {
+        if (service !in SUPPORTED_HEART_RATE_SERVICES ||
+            service in explicitlyNonHeartRateServices
+        ) return false
+        val selected = activeSessionService ?: confirmedHeartRateService ?: discoveredHeartRateService
+        return selected == null || service == selected
+    }
+
+    private fun resolvedServiceForNextAttempt(): Int? =
+        confirmedHeartRateService?.takeUnless(explicitlyNonHeartRateServices::contains)
+            ?: discoveredHeartRateService?.takeUnless(explicitlyNonHeartRateServices::contains)
+            ?: HEART_RATE_SERVICE_FALLBACKS
+                .drop(fallbackServiceIndex)
+                .firstOrNull { it !in explicitlyNonHeartRateServices }
+
+    private fun resolutionSource(service: Int?): HeartRateServiceResolution.Source = when {
+        service == null -> HeartRateServiceResolution.Source.UNAVAILABLE
+        confirmedHeartRateService == service -> HeartRateServiceResolution.Source.VALIDATED_SAMPLE
+        discoveredHeartRateService == service -> HeartRateServiceResolution.Source.METADATA
+        service == IOS27_HEART_RATE_SERVICE -> HeartRateServiceResolution.Source.IOS27_FALLBACK
+        else -> HeartRateServiceResolution.Source.IOS26_FALLBACK
     }
 
     private fun collectCommandMessages(
@@ -388,6 +546,10 @@ class AirPodsHeartRateProtocol {
         val sample: AirPodsHeartRateSample? = null
     )
 
+    private data class ServiceMetadataResult(
+        val changedResolution: HeartRateServiceResolution?
+    )
+
     private data class ProtoMessage(val entries: List<ProtoEntry>) {
         fun firstVarint(field: Int): Long? = entries.firstOrNull {
             it.field == field && it.wireType == WIRE_VARINT
@@ -418,7 +580,12 @@ class AirPodsHeartRateProtocol {
         )
 
         private const val DEVMOTION6_SERVICE = 16
-        private const val HEART_RATE_SERVICE = 20
+        private const val IOS26_HEART_RATE_SERVICE = 19
+        private const val IOS27_HEART_RATE_SERVICE = 20
+        private val SUPPORTED_HEART_RATE_SERVICES =
+            setOf(IOS26_HEART_RATE_SERVICE, IOS27_HEART_RATE_SERVICE)
+        private val HEART_RATE_SERVICE_FALLBACKS =
+            listOf(IOS27_HEART_RATE_SERVICE, IOS26_HEART_RATE_SERVICE)
         private const val COMMAND_SET = 2
         private const val COMMAND_FIELD = 8
         private const val REPORT_INTERVAL = 1
@@ -434,10 +601,14 @@ class AirPodsHeartRateProtocol {
         private val LIVE_STATUS_TAILS = setOf(
             0x000010,
             0x020010,
+            0x800010,
             0x000020,
+            0x008020,
             0x800220,
             0x808220
         )
+        private val HEART_RATE_SERVICE_MARKER = "HeartRateService".encodeToByteArray()
+        private val HOST_LIB_HID_MARKER = "HostLibHID".encodeToByteArray()
         private const val HEART_RATE_PAYLOAD_LENGTH = 18
         private const val BPM_OFFSET = 1
         private const val STATUS_TAIL_LENGTH = 3
@@ -487,4 +658,13 @@ private fun ByteArray.longestSuffixMatchingPrefix(prefix: ByteArray, start: Int)
         if ((0 until length).all { this[suffixStart + it] == prefix[it] }) return length
     }
     return 0
+}
+
+private fun ByteArray.containsBytes(needle: ByteArray, start: Int, end: Int): Boolean {
+    if (needle.isEmpty()) return true
+    if (start < 0 || end > size || start > end || end - start < needle.size) return false
+    for (candidate in start..end - needle.size) {
+        if (needle.indices.all { this[candidate + it] == needle[it] }) return true
+    }
+    return false
 }

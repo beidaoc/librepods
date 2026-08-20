@@ -101,6 +101,7 @@ import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
+import me.kavishdevar.librepods.bluetooth.HeartRateServiceResolution
 import me.kavishdevar.librepods.bluetooth.createBluetoothSocket
 import me.kavishdevar.librepods.data.AirPodsInstance
 import me.kavishdevar.librepods.data.AirPodsModels
@@ -114,6 +115,7 @@ import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.data.isHeadTrackingData
 import me.kavishdevar.librepods.keepbridge.KeepHeartRateBridge
+import me.kavishdevar.librepods.notifications.NotificationAnnouncementRoutePolicy
 import me.kavishdevar.librepods.presentation.overlays.IslandType
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
 import me.kavishdevar.librepods.presentation.overlays.PopupWindow
@@ -147,6 +149,7 @@ import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_LOW_BATTERY_THRESHOLD
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
@@ -182,6 +185,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var otherDeviceTookOver = false
     private var lastAudioSourceMac: String? = null
     private var lastAudioSourceType: AACPManager.Companion.AudioSourceType? = null
+    private val remoteStreamingDevices = ConcurrentHashMap.newKeySet<String>()
     private var lastAacpControlRefreshAt = 0L
     private var lastA2dpVolumeResyncAt = 0L
     private var a2dpVolumeResyncGeneration = 0
@@ -297,7 +301,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         const val ACTION_HEART_RATE_PROBE_STATUS =
             "me.kavishdevar.librepods.action.HEART_RATE_PROBE_STATUS"
         private const val LEGACY_HEART_RATE_PROBE_PREFERENCE = "heart_rate_probe_enabled"
-        private const val HEART_RATE_FIRST_SAMPLE_TIMEOUT_MILLIS = 60_000L
+        private const val HEART_RATE_FIRST_SAMPLE_TIMEOUT_MILLIS = 10_000L
         private const val HEART_RATE_STALL_TIMEOUT_MILLIS = 6_000L
         private const val HEART_RATE_OWNERSHIP_TIMEOUT_MILLIS = 10_000L
         private const val HEART_RATE_OWNERSHIP_REQUEST_DEBOUNCE_MILLIS = 1_000L
@@ -780,6 +784,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //                    isConnectedLocally = false
                     popupShown = false
                     updateNotificationContent(false)
+                    remoteStreamingDevices.clear()
                     aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
@@ -1215,7 +1220,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 )
                 Log.i(
                     "HeartRateProbe",
-                    "sample bpm=${sample.bpm} sequence=${sample.sequence} " +
+                    "sample bpm=${sample.bpm} sequence=${sample.sequence} service=${sample.service} " +
                         "status=0x${sample.statusTail.toString(16).padStart(6, '0')} warmup=$warmup"
                 )
             }
@@ -1263,6 +1268,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val currentSource = aacpManager.audioSource
                 lastAudioSourceMac = currentSource?.mac
                 lastAudioSourceType = currentSource?.type
+                if (
+                    currentSource != null &&
+                    currentSource.type != AACPManager.Companion.AudioSourceType.NONE &&
+                    currentSource.mac.equals(localMac, ignoreCase = true)
+                ) {
+                    remoteStreamingDevices.clear()
+                }
                 Log.d(
                     "AirPodsParser",
                     "Audio source changed mac: ${currentSource?.mac}, type: ${currentSource?.type?.name}"
@@ -1271,8 +1283,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     localMac != "" &&
                     currentSource != null &&
                     currentSource.type != AACPManager.Companion.AudioSourceType.NONE &&
-                    currentSource.mac != localMac
+                    !currentSource.mac.equals(localMac, ignoreCase = true)
                 ) {
+                    remoteStreamingDevices.add(currentSource.mac.uppercase())
                     Log.d(
                         "AirPodsParser",
                         "Audio source is another device; evaluating remote takeover"
@@ -1288,10 +1301,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 // future me: what the heck is this? this just means it will not be taking over again if audio source doesn't change???
                 } else if (
                     previousMac != null &&
-                    currentSource?.mac == localMac &&
+                    currentSource != null &&
+                    currentSource.mac.equals(localMac, ignoreCase = true) &&
                     currentSource.type != AACPManager.Companion.AudioSourceType.NONE &&
-                    (previousMac != localMac || previousType == AACPManager.Companion.AudioSourceType.NONE)
+                    (!previousMac.equals(localMac, ignoreCase = true) ||
+                        previousType == AACPManager.Companion.AudioSourceType.NONE)
                 ) {
+                    remoteStreamingDevices.clear()
                     refreshAacpControlSession("audio source returned to this phone")
                     scheduleAirPodsAbsoluteVolumeResync(
                         "audio source returned to this phone",
@@ -2622,6 +2638,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         bluetoothDevice.address.equals(airPodsMac, ignoreCase = true)
                     if (isCurrentAirPods && state == BluetoothA2dp.STATE_PLAYING) {
                         isAirPodsA2dpPlaying = true
+                        remoteStreamingDevices.clear()
                         Log.d(TAG, "Local AirPods A2DP started playing; reclaiming AACP control")
                         otherDeviceTookOver = false
                         aacpManager.sendControlCommand(
@@ -3491,6 +3508,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         reason: String
     ) {
         if (sender.equals(localMac, ignoreCase = true)) return
+        val senderKey = sender.uppercase()
+        if (isStreaming) {
+            remoteStreamingDevices.add(senderKey)
+        } else {
+            remoteStreamingDevices.remove(senderKey)
+        }
         if (!heartRateRemoteTakeoverGate.onRemoteStreamingStateChanged(isStreaming)) {
             if (isStreaming && heartRateProbeRequested) {
                 Log.d(
@@ -3646,6 +3669,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 BluetoothConnectionManager.aacpSocket?.isConnected == true &&
                 aacpManager.owns
             ) {
+                var firstSampleTimedOut = false
                 synchronized(heartRateProbeLock) {
                     heartRateWarmupRemaining = HEART_RATE_WARMUP_SAMPLES
                     _heartRateProbeStreaming.value = false
@@ -3670,6 +3694,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             else -> now - lastSample >= HEART_RATE_STALL_TIMEOUT_MILLIS
                         }
                         if (timedOut) {
+                            firstSampleTimedOut = lastSample == 0L
                             val reason = if (lastSample == 0L) {
                                 "first-sample-timeout"
                             } else {
@@ -3686,6 +3711,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     !aacpManager.owns
                 ) break
                 aacpManager.sendHeartRateSampling(0)
+                if (firstSampleTimedOut) {
+                    val fallback = aacpManager.advanceHeartRateServiceFallback()
+                    Log.i(
+                        "HeartRateProbe",
+                        "next sampling attempt service=${fallback.serviceId} source=${fallback.source}"
+                    )
+                }
                 if (refreshAttempt >= HEART_RATE_RETRY_BACKOFF_MILLIS.size) {
                     Log.e("HeartRateProbe", "refresh attempts exhausted")
                     break
@@ -3707,13 +3739,55 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private suspend fun initializeHeartRateSession(): Boolean {
         // The successful iOS 27 path writes four HID feature reports. HRM and DEVMOTION6 remain
         // active together, so head tracking and the current HRM session stay untouched.
-        aacpManager.prepareHeartRateSamplingSession()
+        var resolution = aacpManager.prepareHeartRateSamplingSession()
+        if (resolution.serviceId == null) {
+            Log.w("HeartRateProbe", "no compatible RTBuddy heart-rate service available")
+            return false
+        }
+        if (resolution.serviceId == 19) {
+            if (!initializeLegacyHeartRateAacpSession()) return false
+            for (metadataPoll in 0 until 30) {
+                resolution = aacpManager.refreshPreparedHeartRateServiceResolution()
+                if (resolution.source == HeartRateServiceResolution.Source.METADATA) {
+                    break
+                }
+                delay(50L)
+            }
+            if (!sendHeartRateFrame {
+                    aacpManager.sendControlCommand(
+                        AACPManager.Companion.ControlCommandIdentifiers.HRM_STATE.value,
+                        true
+                    )
+                }
+            ) return false
+            delay(120L)
+        }
+        Log.i(
+            "HeartRateProbe",
+            "initializing sampling service=${resolution.serviceId} source=${resolution.source}"
+        )
         val packets = aacpManager.createHeartRateStartPackets()
+        if (packets.isEmpty()) return false
         val delays = longArrayOf(165L, 45L, 105L)
         packets.forEachIndexed { index, packet ->
             if (!sendHeartRateFrame { aacpManager.sendPacket(packet) }) return false
             if (index < delays.size) delay(delays[index])
         }
+        return true
+    }
+
+    private suspend fun initializeLegacyHeartRateAacpSession(): Boolean {
+        val frames = listOf(
+            aacpManager::sendHeartRateConnectService0 to 180L,
+            aacpManager::sendHeartRateCapabilitiesService0 to 220L,
+            aacpManager::sendHeartRateConnectService4 to 180L,
+            aacpManager::sendHeartRateCapabilitiesService4 to 220L
+        )
+        for ((send, delayAfter) in frames) {
+            if (!sendHeartRateFrame(send)) return false
+            delay(delayAfter)
+        }
+        Log.i("HeartRateProbe", "legacy AACP 1.3 heart-rate discovery initialized")
         return true
     }
 
@@ -3776,8 +3850,31 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
     }
 
+    fun canPlayNotificationAnnouncement(): Boolean {
+        if (!::aacpManager.isInitialized || localMac.isBlank()) return false
+        val source = aacpManager.audioSource
+        val sourceIsRemote = source != null &&
+            source.type != AACPManager.Companion.AudioSourceType.NONE &&
+            !source.mac.equals(localMac, ignoreCase = true)
+        val allowed = NotificationAnnouncementRoutePolicy.canAnnounce(
+            localOwnsConnection = aacpManager.owns,
+            remoteDeviceStreaming = remoteStreamingDevices.isNotEmpty(),
+            activeAudioSourceIsRemote = sourceIsRemote
+        )
+        if (!allowed) {
+            Log.d(
+                TAG,
+                "Notification announcement blocked: owns=${aacpManager.owns}, " +
+                    "remoteStreaming=${remoteStreamingDevices.isNotEmpty()}, " +
+                    "audioSourceMac=${source?.mac}, audioSourceType=${source?.type?.name}"
+            )
+        }
+        return allowed
+    }
+
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        remoteStreamingDevices.clear()
         clearPacketLogs()
         Log.d(TAG, "Service stopped is being destroyed for some reason!")
 

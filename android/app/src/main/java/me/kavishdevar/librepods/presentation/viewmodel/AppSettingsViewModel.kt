@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
+import me.kavishdevar.librepods.services.NotificationAnnouncementService
 import me.kavishdevar.librepods.utils.RootSpatialAudioController
 import me.kavishdevar.librepods.utils.SpatialAudioMode
 import kotlin.math.roundToInt
@@ -48,6 +49,7 @@ data class AppSettingsUiState(
     val showBottomSheetPopup: Boolean = true,
     val showIslandPopup: Boolean = true,
     val timeUntilFOSSPremiumExpiry: Long = 0L,
+    val notificationAnnouncementsEnabled: Boolean = false,
     val m3eEnabled: Boolean = false
 )
 
@@ -170,6 +172,10 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
                 showIslandPopup = sharedPreferences.getBoolean("show_island_popup", true),
+                notificationAnnouncementsEnabled = sharedPreferences.getBoolean(
+                    NotificationAnnouncementService.PREFERENCE_ENABLED,
+                    false
+                ),
                 m3eEnabled = sharedPreferences.getBoolean("m3e_enabled", true)
             )
         }
@@ -178,6 +184,13 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     fun setShowPhoneBatteryInWidget(enabled: Boolean) {
         sharedPreferences.edit { putBoolean("show_phone_battery_in_widget", enabled) }
         _uiState.update { it.copy(showPhoneBatteryInWidget = enabled) }
+    }
+
+    fun setNotificationAnnouncementsEnabled(enabled: Boolean) {
+        sharedPreferences.edit {
+            putBoolean(NotificationAnnouncementService.PREFERENCE_ENABLED, enabled)
+        }
+        _uiState.update { it.copy(notificationAnnouncementsEnabled = enabled) }
     }
 
     fun setConversationalAwarenessPauseMusicEnabled(enabled: Boolean) {

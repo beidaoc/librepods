@@ -193,10 +193,7 @@ fun TroubleshootingScreen() {
 
     LaunchedEffect(currentStep) {
         instructionText = when (currentStep) {
-            0 -> "First, let's ensure Xposed module is properly configured. Tap the button below to check Xposed scope settings."
-            1 -> "Please put your AirPods in the case and close it, so they disconnect completely."
-            2 -> "Preparing to collect logs... Please wait."
-            3 -> "Now, open the AirPods case and connect your AirPods. Logs are being collected. Connection will be detected automatically, or you can manually stop logging when you're done."
+            3 -> "Logs are being collected without changing the current Bluetooth or AirPods state. Reproduce the issue, then stop collection when you're done."
             4 -> "Log collection complete! You can now save or share the logs."
             else -> ""
         }
@@ -208,6 +205,62 @@ fun TroubleshootingScreen() {
         isLoadingLogContent = false
         logContentLoaded = false
         showBottomSheet = true
+    }
+
+    fun startCollection() {
+        if (isCollectingLogs) return
+
+        showTroubleshootingSteps = true
+        currentStep = 3
+        isCollectingLogs = true
+        logContent = ""
+        selectedLogFile = null
+
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        coroutineScope.launch {
+            try {
+                logContent = logCollector.startLogCollection(
+                    listener = { /* Live display is intentionally disabled. */ }
+                )
+                val logFile = logCollector.saveLogToInternalStorage(
+                    "airpods_log_$timestamp.txt",
+                    logContent
+                )
+
+                withContext(Dispatchers.Main) {
+                    isCollectingLogs = false
+                    if (logFile != null) {
+                        savedLogs.add(0, logFile)
+                        selectedLogFile = logFile
+                        currentStep = 4
+                        Toast.makeText(
+                            context,
+                            "Log saved: ${logFile.name}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        currentStep = 0
+                        showTroubleshootingSteps = false
+                        Toast.makeText(
+                            context,
+                            "Failed to save log",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isCollectingLogs = false
+                    currentStep = 0
+                    showTroubleshootingSteps = false
+                    Toast.makeText(
+                        context,
+                        "Error collecting logs: ${e.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
     }
 
     val backdrop = rememberLayerBackdrop()
@@ -346,7 +399,7 @@ fun TroubleshootingScreen() {
                 exit = fadeOut(animationSpec = tween(300))
             ) {
                 Button(
-                    onClick = { showTroubleshootingSteps = true },
+                    onClick = ::startCollection,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -407,109 +460,7 @@ fun TroubleshootingScreen() {
                         Spacer(modifier = Modifier.height(16.dp))
 
                         when (currentStep) {
-                            0 -> {
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            logCollector.openXposedSettings(context)
-                                            delay(2000)
-                                            currentStep = 1
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = buttonBgColor,
-                                        contentColor = textColor
-                                    )
-                                ) {
-                                    Text("Open Xposed Settings")
-                                }
-                            }
-
-                            1 -> {
-                                Button(
-                                    onClick = {
-                                        currentStep = 2
-                                        isCollectingLogs = true
-
-                                        coroutineScope.launch {
-                                            try {
-                                                logCollector.clearLogs()
-
-                                                logCollector.addLogMarker(LogCollector.LogMarkerType.START)
-
-                                                logCollector.killBluetoothService()
-
-                                                withContext(Dispatchers.Main) {
-                                                    delay(500)
-                                                    currentStep = 3
-                                                }
-
-                                                val timestamp = SimpleDateFormat(
-                                                    "yyyyMMdd_HHmmss",
-                                                    Locale.US
-                                                ).format(Date())
-
-                                                logContent =
-                                                    logCollector.startLogCollection(
-                                                        listener = { /* Removed live log display */ },
-                                                        connectionDetectedCallback = {
-                                                            launch {
-                                                                delay(5000)
-                                                                withContext(Dispatchers.Main) {
-                                                                    if (isCollectingLogs) {
-                                                                        logCollector.stopLogCollection()
-                                                                        currentStep = 4
-                                                                        isCollectingLogs =
-                                                                            false
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    )
-
-                                                val logFile =
-                                                    logCollector.saveLogToInternalStorage(
-                                                        "airpods_log_$timestamp.txt",
-                                                        logContent
-                                                    )
-                                                logFile?.let {
-                                                    withContext(Dispatchers.Main) {
-                                                        savedLogs.add(0, it)
-                                                        selectedLogFile = it
-                                                        Toast.makeText(
-                                                            context,
-                                                            "Log saved: ${it.name}",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    }
-                                                }
-                                            } catch (e: Exception) {
-                                                withContext(Dispatchers.Main) {
-                                                    Toast.makeText(
-                                                        context,
-                                                        "Error collecting logs: ${e.message}",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
-                                                    isCollectingLogs = false
-                                                    currentStep = 0
-                                                }
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = buttonBgColor,
-                                        contentColor = textColor
-                                    )
-                                ) {
-                                    Text("Continue")
-                                }
-                            }
-
-                            2, 3 -> {
+                            3 -> {
                                 Column(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalAlignment = Alignment.CenterHorizontally
@@ -521,46 +472,33 @@ fun TroubleshootingScreen() {
                                     Spacer(modifier = Modifier.height(8.dp))
 
                                     Text(
-                                        text = if (currentStep == 2) "Preparing..." else "Collecting logs...",
+                                        text = "Collecting logs...",
                                         fontSize = 14.sp,
                                         color = textColor
                                     )
 
-                                    if (currentStep == 3) {
-                                        Spacer(modifier = Modifier.height(16.dp))
+                                    Spacer(modifier = Modifier.height(16.dp))
 
-                                        Button(
-                                            onClick = {
-                                                coroutineScope.launch {
-                                                    logCollector.addLogMarker(
-                                                        LogCollector.LogMarkerType.CUSTOM,
-                                                        "Manual stop requested by user"
-                                                    )
-                                                    delay(1000)
-                                                    logCollector.stopLogCollection()
-                                                    delay(500)
-
-                                                    withContext(Dispatchers.Main) {
-                                                        currentStep = 4
-                                                        isCollectingLogs = false
-                                                        Toast.makeText(
-                                                            context,
-                                                            "Log collection stopped",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    }
-                                                }
-                                            },
-                                            shape = RoundedCornerShape(10.dp),
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = buttonBgColor,
-                                                contentColor = textColor
-                                            ),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                        ) {
-                                            Text("Stop Collection")
-                                        }
+                                    Button(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                logCollector.addLogMarker(
+                                                    LogCollector.LogMarkerType.CUSTOM,
+                                                    "Manual stop requested by user"
+                                                )
+                                                delay(250)
+                                                logCollector.stopLogCollection()
+                                                isCollectingLogs = false
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = buttonBgColor,
+                                            contentColor = textColor
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Stop Collection")
                                     }
                                 }
                             }
@@ -653,6 +591,8 @@ fun TroubleshootingScreen() {
                                     Text("Done")
                                 }
                             }
+
+                            else -> Unit
                         }
                     }
                 }

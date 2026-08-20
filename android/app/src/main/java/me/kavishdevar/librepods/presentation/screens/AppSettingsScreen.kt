@@ -22,6 +22,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -53,6 +54,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -76,6 +78,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -95,6 +101,7 @@ import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.MaterialTypography
 import me.kavishdevar.librepods.presentation.viewmodel.AppSettingsViewModel
+import me.kavishdevar.librepods.services.NotificationAnnouncementService
 import me.kavishdevar.librepods.utils.SpatialAudioMode
 import me.kavishdevar.librepods.utils.XposedState
 import java.util.concurrent.TimeUnit
@@ -111,6 +118,23 @@ fun AppSettingsScreen(
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val state by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val hasNotificationAccess = remember { mutableStateOf(false) }
+
+    fun refreshNotificationAccess() {
+        hasNotificationAccess.value = NotificationManagerCompat
+            .getEnabledListenerPackages(context)
+            .contains(context.packageName)
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        refreshNotificationAccess()
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshNotificationAccess()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val backdrop = rememberLayerBackdrop()
 
@@ -193,6 +217,58 @@ fun AppSettingsScreen(
             onCheckedChange = viewModel::setm3eEnabled,
             enabled = state.isPremium
         )
+
+        val openNotificationAccessSettings: () -> Unit = {
+            runCatching {
+                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }.onFailure {
+                context.startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
+            Unit
+        }
+        val xiaomiTtsAvailable = remember {
+            NotificationAnnouncementService.isXiaomiTtsAvailable(context)
+        }
+        StyledList(
+            title = stringResource(R.string.notification_announcements),
+            description = stringResource(R.string.notification_announcements_description)
+        ) {
+            StyledToggle(
+                label = stringResource(R.string.announce_notifications_on_lock_screen),
+                description = stringResource(R.string.announce_notifications_on_lock_screen_description),
+                checked = state.notificationAnnouncementsEnabled,
+                onCheckedChange = { enabled ->
+                    viewModel.setNotificationAnnouncementsEnabled(enabled)
+                    if (enabled && !hasNotificationAccess.value) {
+                        openNotificationAccessSettings()
+                    }
+                }
+            )
+            StyledListItem(
+                name = stringResource(R.string.notification_access),
+                description = stringResource(
+                    if (hasNotificationAccess.value) {
+                        R.string.notification_access_granted
+                    } else {
+                        R.string.notification_access_required
+                    }
+                ),
+                onClick = openNotificationAccessSettings
+            )
+            StyledListItem(
+                name = stringResource(R.string.voice_engine),
+                description = stringResource(
+                    if (xiaomiTtsAvailable) {
+                        R.string.xiaoai_voice_engine_active
+                    } else {
+                        R.string.default_voice_engine_fallback
+                    }
+                ),
+                enabled = false
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         if (state.connectionSuccessful) {
             StyledToggle(

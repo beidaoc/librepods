@@ -1,5 +1,16 @@
 <resources>
     <string name="app_description" translatable="false">让你的 AirPods 摆脱苹果的生态系统。</string>
+    <string name="notification_announcement_service">通知播报</string>
+    <string name="notification_announcements">通知播报</string>
+    <string name="notification_announcements_description">仅在手机锁屏且 AirPods 可作为蓝牙音频输出时，播报新通知内容。</string>
+    <string name="announce_notifications_on_lock_screen">锁屏时播报通知</string>
+    <string name="announce_notifications_on_lock_screen_description">播报应用名、发送者和消息内容；会跳过机密、常驻、系统及媒体通知。</string>
+    <string name="notification_access">通知使用权</string>
+    <string name="notification_access_granted">已授权</string>
+    <string name="notification_access_required">需要授权，点击允许 LibrePods 读取通知。</string>
+    <string name="voice_engine">语音引擎</string>
+    <string name="xiaoai_voice_engine_active">小爱语音引擎</string>
+    <string name="default_voice_engine_fallback">系统默认（未检测到小爱引擎）</string>
     <string name="app_widget_description">在主屏幕上即可查看 AirPods 的电池状态！</string>
     <string name="accessibility">辅助功能</string>
     <string name="tone_volume">提示音音量</string>

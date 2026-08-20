@@ -30,6 +30,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.RequiresApi
+import me.kavishdevar.librepods.notifications.NotificationAnnouncementPlayback
 import me.kavishdevar.librepods.services.ServiceManager
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -103,6 +104,23 @@ object MediaController {
             val now = SystemClock.uptimeMillis()
             val isActive = audioManager.isMusicActive
             Log.d("MediaController", "Playback config changed, iPausedTheMedia: $iPausedTheMedia, isActive: $isActive, pausedForOtherDevice: $pausedForOtherDevice, lastKnownIsMusicActive: $lastKnownIsMusicActive")
+
+            if (NotificationAnnouncementPlayback.isActive()) {
+                val hasActiveMusicOrMovie = configs?.any { config ->
+                    config.audioAttributes.contentType ==
+                        android.media.AudioAttributes.CONTENT_TYPE_MUSIC ||
+                        config.audioAttributes.contentType ==
+                        android.media.AudioAttributes.CONTENT_TYPE_MOVIE
+                } == true
+                lastKnownIsMusicActive = isActive && hasActiveMusicOrMovie
+                lastPlaybackCallbackAt = now
+                Log.d(
+                    "MediaController",
+                    "Ignoring playback callback during notification announcement; " +
+                        "activeMusicOrMovie=$hasActiveMusicOrMovie"
+                )
+                return
+            }
 
             if (isActive && lastKnownIsMusicActive != true) {
                 ServiceManager.getService()?.onLocalMediaPlaybackStarting()

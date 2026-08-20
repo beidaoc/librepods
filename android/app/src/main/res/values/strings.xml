@@ -1,6 +1,17 @@
 <resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
     <string name="app_name" translatable="false">LibrePods</string>
     <string name="app_description">Liberate your AirPods from Apple\'s ecosystem.</string>
+    <string name="notification_announcement_service">Notification announcements</string>
+    <string name="notification_announcements">Notification announcements</string>
+    <string name="notification_announcements_description">Announces new notification content only while the phone is locked and AirPods are available as a Bluetooth audio output.</string>
+    <string name="announce_notifications_on_lock_screen">Announce notifications on lock screen</string>
+    <string name="announce_notifications_on_lock_screen_description">Speaks the app name, sender, and message content. Secret, ongoing, system, and media notifications are skipped.</string>
+    <string name="notification_access">Notification access</string>
+    <string name="notification_access_granted">Granted</string>
+    <string name="notification_access_required">Required. Tap to allow LibrePods to read notifications.</string>
+    <string name="voice_engine">Voice engine</string>
+    <string name="xiaoai_voice_engine_active">XiaoAI speech engine</string>
+    <string name="default_voice_engine_fallback">System default (XiaoAI engine not available)</string>
     <string name="app_widget_description">See your AirPods battery status right from your home screen!</string>
     <string name="accessibility">Accessibility</string>
     <string name="tone_volume">Tone Volume</string>
