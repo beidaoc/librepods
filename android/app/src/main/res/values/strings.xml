@@ -301,6 +301,9 @@
     <string name="recommended">Recommended</string>
     <string name="appearance">Appearance</string>
     <string name="use_material3e">Use Material 3 Expressive</string>
+    <string name="background">Background</string>
+    <string name="hide_from_recents">Hide LibrePods from Recents</string>
+    <string name="hide_from_recents_description">Hide the app card from Recents.</string>
     <string name="material3e">Material 3 Expressive</string>
     <string name="update_m3e_description">LibrePods now supports a whole new look based on Material 3 Expressive including updated typography and adaptive color schemes.\nYou can switch back to the Apple look from the app\'s settings.</string>
     <string name="update_equalizer_description">Available only on the latest AirPods Beta firmware. An Apple device running OS version 27 is required to install the beta firmware.</string>
@@ -321,4 +324,9 @@
     <string name="spatial_audio_checking">Checking Root, UHID and Spatializer support…</string>
     <string name="spatial_audio_helper_unavailable">The Root head-tracker helper or /dev/uhid is unavailable.</string>
     <string name="spatial_audio_platform_unavailable">This Android audio implementation does not expose a compatible Spatializer.</string>
+    <string name="log_capture_complete">Log capture completed. You can save or share the file.</string>
+    <string name="log_capture_partial">Partial log saved: %1$s</string>
+    <string name="log_capture_failed">Log capture failed: %1$s</string>
+    <string name="log_capture_stopping">Finishing…</string>
+    <string name="log_capture_stop">Stop collection</string>
 </resources>

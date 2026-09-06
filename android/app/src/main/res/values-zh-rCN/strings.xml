@@ -241,4 +241,12 @@
     <string name="spatial_audio_checking">正在检查 Root、UHID 和 Spatializer 支持…</string>
     <string name="spatial_audio_helper_unavailable">Root 头部追踪组件或 /dev/uhid 不可用。</string>
     <string name="spatial_audio_platform_unavailable">当前 Android 音频系统没有兼容的 Spatializer。</string>
+    <string name="background">后台</string>
+    <string name="hide_from_recents">在最近任务中隐藏 LibrePods</string>
+    <string name="hide_from_recents_description">隐藏应用卡片。</string>
+    <string name="log_capture_complete">日志采集完成，可以保存或分享文件。</string>
+    <string name="log_capture_partial">已保留部分日志：%1$s</string>
+    <string name="log_capture_failed">日志采集失败：%1$s</string>
+    <string name="log_capture_stopping">正在保存…</string>
+    <string name="log_capture_stop">停止采集</string>
 </resources>

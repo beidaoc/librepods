@@ -10,6 +10,7 @@ import io.github.libxposed.service.XposedServiceHelper
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.billing.BillingProviderFactory
 import me.kavishdevar.librepods.keepbridge.KeepHeartRateBridge
+import me.kavishdevar.librepods.milink.MiLinkAirPodsBridgeContract
 import me.kavishdevar.librepods.utils.XposedServiceHolder
 import me.kavishdevar.librepods.utils.XposedState
 
@@ -40,6 +41,7 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
             "Xposed service bound: ${service.frameworkName} API ${service.apiVersion}, scope=${service.scope}"
         )
         requestKeepHeartRateScope(service)
+        requestMiLinkScope(service)
     }
 
     override fun onServiceDied(p0: XposedService) {
@@ -79,7 +81,32 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
         }
     }
 
+    private fun requestMiLinkScope(service: XposedService) {
+        val packageName = MiLinkAirPodsBridgeContract.MI_LINK_PACKAGE
+        val installed = runCatching { packageManager.getApplicationInfo(packageName, 0) }.isSuccess
+        if (!installed || service.scope.contains(packageName)) return
+
+        Log.i(MI_LINK_TAG, "Requesting MiLink scope")
+        runCatching {
+            service.requestScope(
+                listOf(packageName),
+                object : XposedService.OnScopeEventListener {
+                    override fun onScopeRequestApproved(scope: List<String>) {
+                        Log.i(MI_LINK_TAG, "MiLink scope approved: $scope")
+                    }
+
+                    override fun onScopeRequestFailed(message: String) {
+                        Log.w(MI_LINK_TAG, "MiLink scope request failed: $message")
+                    }
+                },
+            )
+        }.onFailure {
+            Log.e(MI_LINK_TAG, "MiLink scope request threw", it)
+        }
+    }
+
     private companion object {
         const val KEEP_HEART_RATE_TAG = "LibrePodsKeepHR"
+        const val MI_LINK_TAG = "LibrePodsMiLink"
     }
 }

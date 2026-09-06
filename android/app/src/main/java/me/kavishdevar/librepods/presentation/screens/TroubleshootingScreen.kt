@@ -91,6 +91,7 @@ import androidx.core.content.FileProvider
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -124,25 +125,21 @@ fun TroubleshootingScreen() {
     val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
 
-    val logCollector = remember { LogCollector(context) }
+    val logCollector = remember { LogCollector.getInstance(context) }
     val savedLogs = remember { mutableStateListOf<File>() }
 
     var isCollectingLogs by remember { mutableStateOf(false) }
     var showTroubleshootingSteps by remember { mutableStateOf(false) }
     var currentStep by remember { mutableIntStateOf(0) }
     var logContent by remember { mutableStateOf("") }
+    var pendingExportFile by remember { mutableStateOf<File?>(null) }
+    var captureSummary by remember { mutableStateOf("") }
+    var isStoppingLogs by remember { mutableStateOf(false) }
     var selectedLogFile by remember { mutableStateOf<File?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var isLoadingLogContent by remember { mutableStateOf(false) }
     var logContentLoaded by remember { mutableStateOf(false) }
-
-    LaunchedEffect(isCollectingLogs) {
-        while (isCollectingLogs) {
-            delay(250)
-            delay(250)
-        }
-    }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var showBottomSheet by remember { mutableStateOf(false) }
@@ -156,24 +153,26 @@ fun TroubleshootingScreen() {
     val isDarkTheme = isSystemInDarkTheme()
 
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            val logsDir = File(context.filesDir, "logs")
-            if (logsDir.exists()) {
-                savedLogs.clear()
-                savedLogs.addAll(logsDir.listFiles()?.filter { it.name.endsWith(".txt") }
-                    ?.sortedByDescending { it.lastModified() } ?: emptyList())
+        logCollector.lastResult.collect {
+            val files = withContext(Dispatchers.IO) {
+                File(context.filesDir, "logs").listFiles()?.filter { it.name.endsWith(".txt") }
+                    ?.sortedByDescending { it.lastModified() } ?: emptyList()
             }
+            savedLogs.clear()
+            savedLogs.addAll(files)
         }
     }
 
     val saveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
-        if (uri != null) {
+        val sourceFile = pendingExportFile
+        pendingExportFile = null
+        if (uri != null && sourceFile != null) {
             coroutineScope.launch(Dispatchers.IO) {
                 try {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        outputStream.write(logContent.toByteArray())
+                    checkNotNull(context.contentResolver.openOutputStream(uri)).use { outputStream ->
+                        sourceFile.inputStream().use { it.copyTo(outputStream) }
                     }
                     withContext(Dispatchers.Main) {
                         Toast.makeText(context, "Log saved successfully", Toast.LENGTH_SHORT).show()
@@ -191,10 +190,10 @@ fun TroubleshootingScreen() {
         }
     }
 
-    LaunchedEffect(currentStep) {
+    LaunchedEffect(currentStep, captureSummary) {
         instructionText = when (currentStep) {
             3 -> "Logs are being collected without changing the current Bluetooth or AirPods state. Reproduce the issue, then stop collection when you're done."
-            4 -> "Log collection complete! You can now save or share the logs."
+            4 -> captureSummary
             else -> ""
         }
     }
@@ -216,49 +215,32 @@ fun TroubleshootingScreen() {
         logContent = ""
         selectedLogFile = null
 
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        isStoppingLogs = false
+        captureSummary = ""
         coroutineScope.launch {
             try {
-                logContent = logCollector.startLogCollection(
-                    listener = { /* Live display is intentionally disabled. */ }
-                )
-                val logFile = logCollector.saveLogToInternalStorage(
-                    "airpods_log_$timestamp.txt",
-                    logContent
-                )
-
-                withContext(Dispatchers.Main) {
-                    isCollectingLogs = false
-                    if (logFile != null) {
-                        savedLogs.add(0, logFile)
-                        selectedLogFile = logFile
-                        currentStep = 4
-                        Toast.makeText(
-                            context,
-                            "Log saved: ${logFile.name}",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        currentStep = 0
-                        showTroubleshootingSteps = false
-                        Toast.makeText(
-                            context,
-                            "Failed to save log",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                val result = logCollector.startLogCollection().await()
+                isCollectingLogs = false
+                isStoppingLogs = false
+                val logFile = result.file
+                captureSummary = when (result.status) {
+                    LogCollector.Status.COMPLETE -> context.getString(R.string.log_capture_complete)
+                    LogCollector.Status.PARTIAL -> context.getString(R.string.log_capture_partial, result.reason)
+                    LogCollector.Status.FAILED -> context.getString(R.string.log_capture_failed, result.reason)
                 }
+                if (logFile != null) {
+                    selectedLogFile = logFile
+                }
+                currentStep = 4
+                Toast.makeText(context, captureSummary, Toast.LENGTH_LONG).show()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isCollectingLogs = false
-                    currentStep = 0
-                    showTroubleshootingSteps = false
-                    Toast.makeText(
-                        context,
-                        "Error collecting logs: ${e.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+                isCollectingLogs = false
+                isStoppingLogs = false
+                captureSummary = context.getString(R.string.log_capture_failed, e.message ?: "unknown")
+                currentStep = 4
+                Toast.makeText(context, captureSummary, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -481,16 +463,10 @@ fun TroubleshootingScreen() {
 
                                     Button(
                                         onClick = {
-                                            coroutineScope.launch {
-                                                logCollector.addLogMarker(
-                                                    LogCollector.LogMarkerType.CUSTOM,
-                                                    "Manual stop requested by user"
-                                                )
-                                                delay(250)
-                                                logCollector.stopLogCollection()
-                                                isCollectingLogs = false
-                                            }
+                                            isStoppingLogs = true
+                                            logCollector.stopLogCollection()
                                         },
+                                        enabled = !isStoppingLogs,
                                         shape = RoundedCornerShape(10.dp),
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = buttonBgColor,
@@ -498,7 +474,7 @@ fun TroubleshootingScreen() {
                                         ),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Stop Collection")
+                                        Text(stringResource(if (isStoppingLogs) R.string.log_capture_stopping else R.string.log_capture_stop))
                                     }
                                 }
                             }
@@ -553,9 +529,8 @@ fun TroubleshootingScreen() {
                                     Button(
                                         onClick = {
                                             selectedLogFile?.let { file ->
-                                                saveLauncher.launch(
-                                                    file.absolutePath
-                                                )
+                                                pendingExportFile = file
+                                                saveLauncher.launch(file.name)
                                             }
                                         },
                                         shape = RoundedCornerShape(10.dp),
@@ -829,7 +804,8 @@ fun TroubleshootingScreen() {
                         Button(
                             onClick = {
                                 selectedLogFile?.let { file ->
-                                    saveLauncher.launch(file.absolutePath)
+                                    pendingExportFile = file
+                                    saveLauncher.launch(file.name)
                                 }
                             },
                             shape = RoundedCornerShape(10.dp),
@@ -854,7 +830,7 @@ fun TroubleshootingScreen() {
 
     DisposableEffect(Unit) {
         onDispose {
-            logCollector.stopLogCollection()
+            logCollector.stopLogCollection("screen_closed")
         }
     }
 }

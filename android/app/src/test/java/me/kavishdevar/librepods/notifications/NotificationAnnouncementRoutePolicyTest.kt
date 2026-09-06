@@ -11,6 +11,19 @@ class NotificationAnnouncementRoutePolicyTest {
             NotificationAnnouncementRoutePolicy.canAnnounce(
                 localOwnsConnection = true,
                 remoteDeviceStreaming = false,
+                activeAudioSourceIsLocal = false,
+                activeAudioSourceIsRemote = false
+            )
+        )
+    }
+
+    @Test
+    fun `allows announcement when AirPods confirm this phone is the active audio source`() {
+        assertTrue(
+            NotificationAnnouncementRoutePolicy.canAnnounce(
+                localOwnsConnection = false,
+                remoteDeviceStreaming = false,
+                activeAudioSourceIsLocal = true,
                 activeAudioSourceIsRemote = false
             )
         )
@@ -22,6 +35,7 @@ class NotificationAnnouncementRoutePolicyTest {
             NotificationAnnouncementRoutePolicy.canAnnounce(
                 localOwnsConnection = true,
                 remoteDeviceStreaming = true,
+                activeAudioSourceIsLocal = true,
                 activeAudioSourceIsRemote = false
             )
         )
@@ -29,6 +43,7 @@ class NotificationAnnouncementRoutePolicyTest {
             NotificationAnnouncementRoutePolicy.canAnnounce(
                 localOwnsConnection = true,
                 remoteDeviceStreaming = false,
+                activeAudioSourceIsLocal = false,
                 activeAudioSourceIsRemote = true
             )
         )
@@ -40,6 +55,7 @@ class NotificationAnnouncementRoutePolicyTest {
             NotificationAnnouncementRoutePolicy.canAnnounce(
                 localOwnsConnection = false,
                 remoteDeviceStreaming = false,
+                activeAudioSourceIsLocal = false,
                 activeAudioSourceIsRemote = false
             )
         )

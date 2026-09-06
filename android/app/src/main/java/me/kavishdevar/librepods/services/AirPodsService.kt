@@ -115,6 +115,10 @@ import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.data.isHeadTrackingData
 import me.kavishdevar.librepods.keepbridge.KeepHeartRateBridge
+import me.kavishdevar.librepods.milink.MiLinkAirPodsBridgeContract
+import me.kavishdevar.librepods.milink.MiLinkAncModeMapper
+import me.kavishdevar.librepods.milink.MiLinkSpatialAudioAvailability
+import me.kavishdevar.librepods.milink.MiLinkSpatialAudioModeMapper
 import me.kavishdevar.librepods.notifications.NotificationAnnouncementRoutePolicy
 import me.kavishdevar.librepods.presentation.overlays.IslandType
 import me.kavishdevar.librepods.presentation.overlays.IslandWindow
@@ -149,6 +153,7 @@ import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_UNTETHERED_RIGHT_LOW_BATTERY_THRESHOLD
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -218,6 +223,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var isAirPodsA2dpPlaying = false
     private var spatialAudioTransitionId = 0
     private val spatialAudioTransitionMutex = Mutex()
+    @Volatile
+    private var miLinkSpatialAudioCapabilityChecked = false
+    @Volatile
+    private var miLinkSpatialAudioAvailable = false
+    private var miLinkSpatialAudioCapabilityJob: Job? = null
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -465,6 +475,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         attManager = ATTManagerv2()
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
+        refreshMiLinkSpatialAudioCapability("service created")
 
         localMac = config.selfMacAddress
         if (localMac.isEmpty()) {
@@ -613,7 +624,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         externalBroadcastReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action == "me.kavishdevar.librepods.SET_ANC_MODE") {
+                if (intent?.action == MiLinkAirPodsBridgeContract.ACTION_REQUEST_STATE) {
+                    if (!miLinkSpatialAudioCapabilityChecked) {
+                        refreshMiLinkSpatialAudioCapability("MiLink requested state")
+                    }
+                    sendMiLinkBridgeState("requested")
+                } else if (intent?.action == MiLinkAirPodsBridgeContract.ACTION_SET_ANC) {
+                    handleMiLinkAncCommand(intent)
+                } else if (intent?.action ==
+                    MiLinkAirPodsBridgeContract.ACTION_SET_SPATIAL_AUDIO
+                ) {
+                    handleMiLinkSpatialAudioCommand(intent)
+                } else if (intent?.action == "me.kavishdevar.librepods.SET_ANC_MODE") {
                     if (intent.hasExtra("mode")) {
                         val mode = intent.getIntExtra("mode", -1)
                         if (mode in 1..4) {
@@ -769,6 +791,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     sharedPreferences.edit {
                         putString("mac_address", macAddress)
                     }
+                    sendMiLinkBridgeState("AirPods detected")
 //                    }
 
                 } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
@@ -788,6 +811,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     aacpManager.disconnected()
                     BluetoothConnectionManager.aacpSocket = null
                     BluetoothConnectionManager.attSocket = null
+                    sendMiLinkBridgeState("AirPods disconnected")
                 }
             }
         }
@@ -972,7 +996,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
 
                 if (batteryNotification.getBattery()[0].status == BatteryStatus.CHARGING && batteryNotification.getBattery()[1].status == BatteryStatus.CHARGING) {
-                    disconnectAudio(this@AirPodsService, device)
+                    disconnectAudio(this@AirPodsService, device, "both_buds_charging")
                 } else {
                     connectAudio(this@AirPodsService, device)
                 }
@@ -1064,7 +1088,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     MediaController.pausedForOtherDevice = true
                     otherDeviceTookOver = true
                     disconnectAudio(
-                        this@AirPodsService, device
+                        this@AirPodsService, device, "aacp_ownership_lost"
                     )
                 }
             }
@@ -1085,11 +1109,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         byteArrayOf(0x00)
                     )
                     otherDeviceTookOver = true
-                    disconnectAudio(this@AirPodsService, device)
+                    disconnectAudio(this@AirPodsService, device, "ownership_request sender=$sender reverse=$reasonReverseTapped")
                     if (reasonReverseTapped) {
                         Log.d(TAG, "reverse tapped, disconnecting audio")
                         disconnectedBecauseReversed = true
-                        disconnectAudio(this@AirPodsService, device)
+                        disconnectAudio(this@AirPodsService, device, "ownership_reverse sender=$sender")
                     }
                     showIsland(
                         this@AirPodsService,
@@ -1461,7 +1485,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } else if (newInEarData == listOf(false, false)) {
                 MediaController.sendPause(force = true)
                 if (config.disconnectWhenNotWearing) {
-                    disconnectAudio(this@AirPodsService, device)
+                    disconnectAudio(this@AirPodsService, device, "not_wearing_preference")
                 }
             }
             val wasNone = inEarData == listOf(false, false)
@@ -1672,6 +1696,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             "head_gestures" -> config.headGestures = preferences.getBoolean(key, true)
             "spatial_audio_enabled", SpatialAudioMode.PREFERENCE_KEY -> {
                 updateSpatialAudioTracking("setting changed")
+                sendMiLinkBridgeState("spatial audio setting changed")
             }
             "disconnect_when_not_wearing" -> config.disconnectWhenNotWearing =
                 preferences.getBoolean(key, false)
@@ -2014,6 +2039,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             putExtra("data", ancNotification.status)
             setPackage(packageName)
         })
+        sendMiLinkBridgeState("ANC status changed")
     }
 
     fun sendBatteryBroadcast() {
@@ -2022,6 +2048,182 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             putParcelableArrayListExtra("data", ArrayList(batteryNotification.getBattery()))
             setPackage(packageName)
         })
+        sendMiLinkBridgeState("battery status changed")
+    }
+
+    private fun handleMiLinkAncCommand(intent: Intent) {
+        val protocolVersion = intent.getIntExtra(
+            MiLinkAirPodsBridgeContract.EXTRA_PROTOCOL_VERSION,
+            -1,
+        )
+        val expectedToken = getMiLinkBridgeToken()
+        val receivedToken = intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_TOKEN)
+        val requestedAddress = intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_ADDRESS)
+        val currentAddress = device?.address ?: macAddress
+        val requestedMode = intent.getIntExtra(
+            MiLinkAirPodsBridgeContract.EXTRA_ANC_MODE,
+            -1,
+        )
+        val validRequest = protocolVersion == MiLinkAirPodsBridgeContract.PROTOCOL_VERSION &&
+            receivedToken == expectedToken &&
+            requestedAddress.equals(currentAddress, ignoreCase = true) &&
+            MiLinkAncModeMapper.isSelectableLibrePodsMode(requestedMode)
+        val controlSessionAvailable =
+            BluetoothConnectionManager.aacpSocket?.isConnected == true && device != null
+
+        if (!validRequest || !controlSessionAvailable) {
+            Log.w(
+                TAG,
+                "MiLink ANC command rejected: valid=$validRequest, " +
+                    "controlSessionAvailable=$controlSessionAvailable",
+            )
+            sendMiLinkBridgeState("ANC command rejected")
+            return
+        }
+
+        Log.i(TAG, "MiLink ANC command accepted: mode=$requestedMode")
+        aacpManager.sendControlCommand(
+            AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
+            requestedMode,
+        )
+    }
+
+    private fun handleMiLinkSpatialAudioCommand(intent: Intent) {
+        val protocolVersion = intent.getIntExtra(
+            MiLinkAirPodsBridgeContract.EXTRA_PROTOCOL_VERSION,
+            -1,
+        )
+        val expectedToken = getMiLinkBridgeToken()
+        val receivedToken = intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_TOKEN)
+        val requestedAddress = intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_ADDRESS)
+        val currentAddress = device?.address ?: macAddress
+        val requestedMode = intent.getIntExtra(
+            MiLinkAirPodsBridgeContract.EXTRA_SPATIAL_AUDIO_MODE,
+            -1,
+        )
+        val validRequest = protocolVersion == MiLinkAirPodsBridgeContract.PROTOCOL_VERSION &&
+            receivedToken == expectedToken &&
+            requestedAddress.equals(currentAddress, ignoreCase = true) &&
+            MiLinkSpatialAudioModeMapper.isSelectableLibrePodsMode(requestedMode) &&
+            miLinkSpatialAudioCapabilityChecked && miLinkSpatialAudioAvailable
+        val connected = device != null && BluetoothConnectionManager.aacpSocket?.isConnected == true
+
+        if (!validRequest || !connected) {
+            Log.w(
+                TAG,
+                "MiLink spatial audio command rejected: valid=$validRequest, connected=$connected",
+            )
+            sendMiLinkBridgeState("spatial audio command rejected")
+            return
+        }
+
+        val mode = when (requestedMode) {
+            MiLinkSpatialAudioModeMapper.LIBREPODS_FIXED -> SpatialAudioMode.FIXED
+            MiLinkSpatialAudioModeMapper.LIBREPODS_HEAD_TRACKED ->
+                SpatialAudioMode.HEAD_TRACKED
+            else -> SpatialAudioMode.OFF
+        }
+        Log.i(TAG, "MiLink spatial audio command accepted: mode=$mode")
+        val previousMode = SpatialAudioMode.fromPreferences(sharedPreferences)
+        sharedPreferences.edit {
+            putString(SpatialAudioMode.PREFERENCE_KEY, mode.preferenceValue)
+        }
+        if (previousMode == mode) {
+            updateSpatialAudioTracking("MiLink selected current spatial mode")
+            sendMiLinkBridgeState("spatial audio command unchanged")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendMiLinkBridgeState(reason: String) {
+        val batteries = batteryNotification.getBattery()
+        fun battery(component: Int): Battery? = batteries.firstOrNull { it.component == component }
+        fun level(value: Battery?): Int =
+            if (value == null || value.status == BatteryStatus.DISCONNECTED) -1
+            else value.level.coerceIn(0, 100)
+        fun charging(value: Battery?): Boolean =
+            value?.status == BatteryStatus.CHARGING ||
+                value?.status == BatteryStatus.OPTIMIZED_CHARGING
+
+        val left = battery(BatteryComponent.LEFT)
+        val right = battery(BatteryComponent.RIGHT)
+        val case = battery(BatteryComponent.CASE)
+        val currentAddress = device?.address ?: macAddress
+        if (currentAddress.isBlank()) return
+
+        sendBroadcast(
+            Intent(MiLinkAirPodsBridgeContract.ACTION_STATE_CHANGED).apply {
+                setPackage(MiLinkAirPodsBridgeContract.MI_LINK_PACKAGE)
+                addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+                putExtra(
+                    MiLinkAirPodsBridgeContract.EXTRA_PROTOCOL_VERSION,
+                    MiLinkAirPodsBridgeContract.PROTOCOL_VERSION,
+                )
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_TOKEN, getMiLinkBridgeToken())
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_ADDRESS, currentAddress)
+                putExtra(
+                    MiLinkAirPodsBridgeContract.EXTRA_NAME,
+                    sharedPreferences.getString("name", device?.name ?: "AirPods") ?: "AirPods",
+                )
+                putExtra(
+                    MiLinkAirPodsBridgeContract.EXTRA_CONNECTED,
+                    device != null && BluetoothConnectionManager.aacpSocket?.isConnected == true,
+                )
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_ANC_MODE, ancNotification.status)
+                putExtra(
+                    MiLinkAirPodsBridgeContract.EXTRA_SPATIAL_AUDIO_MODE,
+                    when (SpatialAudioMode.fromPreferences(sharedPreferences)) {
+                        SpatialAudioMode.OFF ->
+                            MiLinkSpatialAudioModeMapper.LIBREPODS_OFF
+                        SpatialAudioMode.FIXED ->
+                            MiLinkSpatialAudioModeMapper.LIBREPODS_FIXED
+                        SpatialAudioMode.HEAD_TRACKED ->
+                            MiLinkSpatialAudioModeMapper.LIBREPODS_HEAD_TRACKED
+                    },
+                )
+                putExtra(
+                    MiLinkAirPodsBridgeContract.EXTRA_SPATIAL_AUDIO_AVAILABLE,
+                    miLinkSpatialAudioCapabilityChecked && miLinkSpatialAudioAvailable,
+                )
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_LEFT_BATTERY, level(left))
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_RIGHT_BATTERY, level(right))
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_CASE_BATTERY, level(case))
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_LEFT_CHARGING, charging(left))
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_RIGHT_CHARGING, charging(right))
+                putExtra(MiLinkAirPodsBridgeContract.EXTRA_CASE_CHARGING, charging(case))
+            },
+        )
+        Log.d(TAG, "MiLink bridge state sent: $reason")
+    }
+
+    private fun refreshMiLinkSpatialAudioCapability(reason: String) {
+        if (miLinkSpatialAudioCapabilityJob?.isActive == true) return
+        miLinkSpatialAudioCapabilityJob = audioFeatureScope.launch(Dispatchers.IO) {
+            val result = spatialAudioController.query()
+            miLinkSpatialAudioAvailable = MiLinkSpatialAudioAvailability.isPanelAvailable(
+                capabilityChecked = true,
+                spatializerAvailable = result.spatializerAvailable,
+                helperAvailable = result.helperAvailable,
+                error = result.error,
+            )
+            miLinkSpatialAudioCapabilityChecked = true
+            Log.i(
+                TAG,
+                "MiLink spatial capability for '$reason': " +
+                    "available=${result.spatializerAvailable}, " +
+                    "helper=${result.helperAvailable}, error=${result.error}",
+            )
+            withContext(Dispatchers.Main) {
+                sendMiLinkBridgeState("spatial audio capability checked")
+            }
+        }
+    }
+
+    private fun getMiLinkBridgeToken(): String {
+        val prefs = getSharedPreferences("milink_airpods_bridge", MODE_PRIVATE)
+        return prefs.getString("token", null) ?: UUID.randomUUID().toString().also { token ->
+            prefs.edit { putString("token", token) }
+        }
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -2678,6 +2880,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     val externalBroadcastFilter = IntentFilter().apply {
         addAction("me.kavishdevar.librepods.SET_ANC_MODE")
         addAction("me.kavishdevar.librepods.CONVO_DETECT")
+        addAction(MiLinkAirPodsBridgeContract.ACTION_REQUEST_STATE)
+        addAction(MiLinkAirPodsBridgeContract.ACTION_SET_ANC)
+        addAction(MiLinkAirPodsBridgeContract.ACTION_SET_SPATIAL_AUDIO)
     }
     var externalBroadcastReceiver: BroadcastReceiver? = null
 
@@ -3140,6 +3345,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
                             } else if (bytesRead == -1) {
                                 Log.d("AirPodsService", "socket closed (bytesRead = -1)")
+                                traceConnectionEvent("aacp_eof", "transport_closed; HCI reason requires Bluetooth log")
                                 resetHeartRateMonitoringForSession(
                                     reason = "AACP socket closed",
                                     sendStop = false
@@ -3152,6 +3358,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Error reading data, we have probably disconnected.")
+                            traceConnectionEvent("aacp_read_failed", e.javaClass.simpleName)
                             e.printStackTrace()
                             resetHeartRateMonitoringForSession(
                                 reason = "AACP socket read failed",
@@ -3321,7 +3528,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         return ancNotification.status
     }
 
-    fun disconnectAudio(context: Context, device: BluetoothDevice?) {
+    @Volatile private var lastAudioDisconnectRequest: String = "none"
+    @Volatile private var lastAudioDisconnectRequestAt: Long = 0
+
+    private fun traceConnectionEvent(event: String, reason: String) {
+        // Diagnostics must not prevent the existing connection action, including during initialization.
+        val state = runCatching { diagnosticStateSnapshot().replace('\n', ' ').take(3_000) }
+            .getOrElse { "snapshotError=${it.javaClass.simpleName}" }
+        Log.i("AirPodsConnectionTrace", "event=$event elapsedRealtimeMs=${SystemClock.elapsedRealtime()} reason=$reason $state")
+    }
+
+    fun disconnectAudio(context: Context, device: BluetoothDevice?, reason: String) {
+        lastAudioDisconnectRequest = reason
+        lastAudioDisconnectRequestAt = SystemClock.elapsedRealtime()
+        traceConnectionEvent("disconnect_audio_requested", reason)
         val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java).adapter
         if (checkSelfPermission("android.permission.BLUETOOTH_PRIVILEGED") == PackageManager.PERMISSION_GRANTED) {
             bluetoothAdapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
@@ -3335,9 +3555,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             val method = proxy.javaClass.getMethod(
                                 "setConnectionPolicy", BluetoothDevice::class.java, Int::class.java
                             )
-                            Log.d(TAG, "calling A2DP.setConnectionPolicy for ${device?.address} to 0")
-                            method.invoke(proxy, device, 0)
+                            Log.i("AirPodsConnectionTrace", "event=policy_request profile=A2DP policy=0 device=${device?.address} reason=$reason")
+                            val result = method.invoke(proxy, device, 0)
+                            Log.i("AirPodsConnectionTrace", "event=policy_result profile=A2DP result=$result reason=$reason (result is not proof of link disconnection)")
                         } catch (e: Exception) {
+                            Log.w("AirPodsConnectionTrace", "event=policy_failed profile=A2DP reason=$reason", e)
                             e.printStackTrace()
                         } finally {
                             bluetoothAdapter.closeProfileProxy(BluetoothProfile.A2DP, proxy)
@@ -3361,9 +3583,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                     BluetoothDevice::class.java,
                                     Int::class.java
                                 )
-                            Log.d(TAG, "calling HEADSET.setConnectionPolicy for ${device?.address} to 0")
-                            method.invoke(proxy, device, 0)
+                            Log.i("AirPodsConnectionTrace", "event=policy_request profile=HEADSET policy=0 device=${device?.address} reason=$reason")
+                            val result = method.invoke(proxy, device, 0)
+                            Log.i("AirPodsConnectionTrace", "event=policy_result profile=HEADSET result=$result reason=$reason (result is not proof of link disconnection)")
                         } catch (e: Exception) {
+                            Log.w("AirPodsConnectionTrace", "event=policy_failed profile=HEADSET reason=$reason", e)
                             e.printStackTrace()
                         } finally {
                             bluetoothAdapter.closeProfileProxy(BluetoothProfile.HEADSET, proxy)
@@ -3534,7 +3758,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 )
             }
             otherDeviceTookOver = true
-            disconnectAudio(this@AirPodsService, device)
+            disconnectAudio(this@AirPodsService, device, "remote_streaming sender=$sender reason=$reason")
             MediaController.sendPause()
         }
     }
@@ -3850,22 +4074,79 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
     }
 
+    /** Read cached state only; collecting diagnostics must never take over the audio route. */
+    fun diagnosticStateSnapshot(): String = buildString {
+        appendLine("airPodsService=running")
+        appendLine("localBluetoothAddress=$localMac, airPodsAddress=${device?.address}")
+        appendLine("lastAudioDisconnectRequest=$lastAudioDisconnectRequest")
+        appendLine("lastAudioDisconnectRequestAgeMs=" + if (lastAudioDisconnectRequestAt > 0) {
+            (SystemClock.elapsedRealtime() - lastAudioDisconnectRequestAt).toString()
+        } else "none")
+        appendLine("aacpConnected=${BluetoothConnectionManager.aacpSocket?.isConnected == true}")
+        appendLine("a2dpPlayingReported=$isAirPodsA2dpPlaying")
+        appendLine("headTrackingActive=$isHeadTrackingActive")
+        appendLine("ancModeReported=${ancNotification.status}")
+        appendLine("remoteStreamingDeviceCount=${remoteStreamingDevices.size}")
+        appendLine("remoteStreamingDevices=${remoteStreamingDevices.take(16).joinToString(",")}")
+        if (::aacpManager.isInitialized) {
+            val source = aacpManager.audioSource
+            appendLine("audioSourceAddress=${source?.mac ?: "unknown"}")
+            appendLine("connectedDevicesReported=" + aacpManager.connectedDevices.take(16).joinToString(";") {
+                "${it.mac}:${it.type}"
+            })
+            appendLine("ownsConnectionCached=${aacpManager.owns}")
+            appendLine("ownsConnectionReported=" +
+                (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)
+                    ?.value?.firstOrNull()?.toInt()?.toString() ?: "unknown"))
+            appendLine("audioSourceType=${source?.type?.name ?: "unknown"}")
+            appendLine("audioSourceRelation=" + when {
+                source == null -> "unknown"
+                source.type == AACPManager.Companion.AudioSourceType.NONE -> "none"
+                localMac.isBlank() -> "unknown"
+                source.mac.equals(localMac, ignoreCase = true) -> "local"
+                else -> "remote"
+            })
+        } else appendLine("aacpState=uninitialized")
+        if (::sharedPreferences.isInitialized) {
+            appendLine("spatialAudioModeRequested=${SpatialAudioMode.fromPreferences(sharedPreferences)}")
+        }
+        appendLine("miLinkSpatialCapabilityChecked=$miLinkSpatialAudioCapabilityChecked")
+        appendLine("miLinkSpatialAvailable=$miLinkSpatialAudioAvailable")
+        appendLine("heartRateEnabled=${_heartRateProbeEnabled.value}")
+        appendLine("heartRateStreaming=${_heartRateProbeStreaming.value}")
+        val lastSampleAt = lastHeartRateSampleElapsedRealtime
+        appendLine("heartRateLastSampleAgeMs=" + if (lastSampleAt > 0) {
+            (SystemClock.elapsedRealtime() - lastSampleAt).toString()
+        } else "none")
+    }
+
     fun canPlayNotificationAnnouncement(): Boolean {
         if (!::aacpManager.isInitialized || localMac.isBlank()) return false
         val source = aacpManager.audioSource
+        val sourceIsLocal = source != null &&
+            source.type != AACPManager.Companion.AudioSourceType.NONE &&
+            source.mac.equals(localMac, ignoreCase = true)
         val sourceIsRemote = source != null &&
             source.type != AACPManager.Companion.AudioSourceType.NONE &&
             !source.mac.equals(localMac, ignoreCase = true)
         val allowed = NotificationAnnouncementRoutePolicy.canAnnounce(
             localOwnsConnection = aacpManager.owns,
             remoteDeviceStreaming = remoteStreamingDevices.isNotEmpty(),
+            activeAudioSourceIsLocal = sourceIsLocal,
             activeAudioSourceIsRemote = sourceIsRemote
         )
+        if (allowed && !aacpManager.owns && sourceIsLocal) {
+            Log.i(
+                TAG,
+                "Notification announcement allowed by confirmed local audio source fallback"
+            )
+        }
         if (!allowed) {
             Log.d(
                 TAG,
                 "Notification announcement blocked: owns=${aacpManager.owns}, " +
                     "remoteStreaming=${remoteStreamingDevices.isNotEmpty()}, " +
+                    "sourceIsLocal=$sourceIsLocal, sourceIsRemote=$sourceIsRemote, " +
                     "audioSourceMac=${source?.mac}, audioSourceType=${source?.type?.name}"
             )
         }

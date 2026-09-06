@@ -21,6 +21,7 @@
 #-renamesourcefileattribute SourceFile
 
 -keep class me.kavishdevar.librepods.utils.KotlinModule { *; }
+-keep class me.kavishdevar.librepods.milink.MiLinkAirPodsHook { *; }
 -keep class me.kavishdevar.librepods.utils.SpatializerRootCommand { public static void main(java.lang.String[]); }
 -keep class me.kavishdevar.librepods.utils.AvrcpVolumeRootCommand { public static void main(java.lang.String[]); }
 

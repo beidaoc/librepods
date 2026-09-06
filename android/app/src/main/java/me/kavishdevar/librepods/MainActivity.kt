@@ -25,6 +25,7 @@ package me.kavishdevar.librepods
 //import dagger.hilt.android.AndroidEntryPoint
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -62,6 +63,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 lateinit var serviceConnection: ServiceConnection
 lateinit var connectionStatusReceiver: BroadcastReceiver
 lateinit var testReviewReceiver: BroadcastReceiver
+const val PREFERENCE_HIDE_FROM_RECENTS = "hide_from_recents"
 
 //@AndroidEntryPoint
 @ExperimentalMaterial3Api
@@ -74,10 +76,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private lateinit var settingsPreferences: SharedPreferences
+    private val settingsPreferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == PREFERENCE_HIDE_FROM_RECENTS) {
+                runOnUiThread(::updateRecentTasksVisibility)
+            }
+        }
+
     @ExperimentalHazeMaterialsApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        settingsPreferences = getSharedPreferences("settings", MODE_PRIVATE)
+        settingsPreferences.registerOnSharedPreferenceChangeListener(
+            settingsPreferenceChangeListener
+        )
+        updateRecentTasksVisibility()
 
         setContent {
             val sharedPreferences = LocalContext.current.getSharedPreferences("settings", MODE_PRIVATE)
@@ -108,7 +124,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        updateRecentTasksVisibility()
+    }
+
+    private fun updateRecentTasksVisibility() {
+        val excludeFromRecents = settingsPreferences
+            .getBoolean(PREFERENCE_HIDE_FROM_RECENTS, false)
+        val activityManager = getSystemService(ActivityManager::class.java)
+        activityManager.appTasks
+            .firstOrNull { it.taskInfo?.taskId == taskId }
+            ?.setExcludeFromRecents(excludeFromRecents)
+    }
+
     override fun onDestroy() {
+        settingsPreferences.unregisterOnSharedPreferenceChangeListener(
+            settingsPreferenceChangeListener
+        )
         try {
             unbindService(serviceConnection)
             Log.d("MainActivity", "Unbound service")

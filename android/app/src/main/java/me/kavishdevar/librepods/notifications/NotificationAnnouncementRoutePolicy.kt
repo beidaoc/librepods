@@ -14,6 +14,10 @@ object NotificationAnnouncementRoutePolicy {
     fun canAnnounce(
         localOwnsConnection: Boolean,
         remoteDeviceStreaming: Boolean,
+        activeAudioSourceIsLocal: Boolean,
         activeAudioSourceIsRemote: Boolean
-    ): Boolean = localOwnsConnection && !remoteDeviceStreaming && !activeAudioSourceIsRemote
+    ): Boolean {
+        if (remoteDeviceStreaming || activeAudioSourceIsRemote) return false
+        return localOwnsConnection || activeAudioSourceIsLocal
+    }
 }

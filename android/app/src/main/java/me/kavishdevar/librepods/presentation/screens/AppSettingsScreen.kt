@@ -218,6 +218,14 @@ fun AppSettingsScreen(
             enabled = state.isPremium
         )
 
+        StyledToggle(
+            title = stringResource(R.string.background),
+            label = stringResource(R.string.hide_from_recents),
+            description = stringResource(R.string.hide_from_recents_description),
+            checked = state.hideFromRecents,
+            onCheckedChange = viewModel::setHideFromRecents
+        )
+
         val openNotificationAccessSettings: () -> Unit = {
             runCatching {
                 context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))

@@ -8,8 +8,17 @@ class LogCollectorFilterTest {
     private val filteredSystemUids = setOf("1000", "1041")
 
     @Test
+    fun keepsMiLinkMirrorEvenWithSharedSystemUid() {
+        assertTrue(keep(line(uid = "1000", tag = "LibrePodsMiLink", message = "State updated")))
+        assertTrue(keep(line(uid = "10500", tag = "LibrePodsMiLink", message = "ANC selection confirmed")))
+        assertTrue(keep(line(uid = "1000", tag = "am_crash", message = "com.milink.service")))
+        assertTrue(keep(line(uid = "1000", tag = "am_proc_died", message = "com.xiaomi.mibrain.speech")))
+    }
+
+    @Test
     fun keepsLibrePodsAndBluetoothLinesWithoutTagFiltering() {
         assertTrue(keep(line(uid = "10402", tag = "AirPodsService")))
+        assertTrue(keep(line(uid = "10402", tag = "NotificationAnnounceTrace")))
         assertTrue(keep(line(uid = "1002", tag = "BluetoothMcpService")))
     }
 

@@ -36,11 +36,35 @@ class LatestNotificationAnnouncementQueueTest {
     fun `oldest conversation is dropped when capacity is exceeded`() {
         val queue = LatestNotificationAnnouncementQueue(maxPendingConversations = 2)
 
-        queue.offer(NotificationAnnouncement("first", "第一条"))
-        queue.offer(NotificationAnnouncement("second", "第二条"))
-        queue.offer(NotificationAnnouncement("third", "第三条"))
+        assertEquals(
+            NotificationAnnouncementOfferResult.ADDED,
+            queue.offer(NotificationAnnouncement("first", "第一条"))
+        )
+        assertEquals(
+            NotificationAnnouncementOfferResult.ADDED,
+            queue.offer(NotificationAnnouncement("second", "第二条"))
+        )
+        assertEquals(
+            NotificationAnnouncementOfferResult.ADDED_AFTER_EVICTION,
+            queue.offer(NotificationAnnouncement("third", "第三条"))
+        )
 
         assertEquals("第二条", queue.poll()?.spokenText)
         assertEquals("第三条", queue.poll()?.spokenText)
+    }
+
+    @Test
+    fun `offer reports replacement without increasing queue size`() {
+        val queue = LatestNotificationAnnouncementQueue(maxPendingConversations = 2)
+
+        assertEquals(
+            NotificationAnnouncementOfferResult.ADDED,
+            queue.offer(NotificationAnnouncement("wechat-zhang", "第二条"))
+        )
+        assertEquals(
+            NotificationAnnouncementOfferResult.REPLACED,
+            queue.offer(NotificationAnnouncement("wechat-zhang", "最新一条"))
+        )
+        assertEquals(1, queue.size())
     }
 }

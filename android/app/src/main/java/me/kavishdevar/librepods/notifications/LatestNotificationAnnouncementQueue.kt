@@ -15,6 +15,12 @@ data class NotificationAnnouncement(
     val spokenText: String
 )
 
+enum class NotificationAnnouncementOfferResult {
+    ADDED,
+    REPLACED,
+    ADDED_AFTER_EVICTION
+}
+
 /**
  * Keeps at most one waiting announcement per conversation.
  *
@@ -31,13 +37,18 @@ class LatestNotificationAnnouncementQueue(
 
     private val pendingByConversation = LinkedHashMap<String, NotificationAnnouncement>()
 
-    fun offer(announcement: NotificationAnnouncement) {
-        if (!pendingByConversation.containsKey(announcement.conversationKey) &&
-            pendingByConversation.size >= maxPendingConversations
-        ) {
+    fun offer(announcement: NotificationAnnouncement): NotificationAnnouncementOfferResult {
+        val replacing = pendingByConversation.containsKey(announcement.conversationKey)
+        val evicted = !replacing && pendingByConversation.size >= maxPendingConversations
+        if (evicted) {
             pendingByConversation.remove(pendingByConversation.keys.first())
         }
         pendingByConversation[announcement.conversationKey] = announcement
+        return when {
+            replacing -> NotificationAnnouncementOfferResult.REPLACED
+            evicted -> NotificationAnnouncementOfferResult.ADDED_AFTER_EVICTION
+            else -> NotificationAnnouncementOfferResult.ADDED
+        }
     }
 
     fun poll(): NotificationAnnouncement? {

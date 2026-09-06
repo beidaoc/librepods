@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.BuildConfig
+import me.kavishdevar.librepods.PREFERENCE_HIDE_FROM_RECENTS
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.services.NotificationAnnouncementService
@@ -50,6 +51,7 @@ data class AppSettingsUiState(
     val showIslandPopup: Boolean = true,
     val timeUntilFOSSPremiumExpiry: Long = 0L,
     val notificationAnnouncementsEnabled: Boolean = false,
+    val hideFromRecents: Boolean = false,
     val m3eEnabled: Boolean = false
 )
 
@@ -176,6 +178,10 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                     NotificationAnnouncementService.PREFERENCE_ENABLED,
                     false
                 ),
+                hideFromRecents = sharedPreferences.getBoolean(
+                    PREFERENCE_HIDE_FROM_RECENTS,
+                    false
+                ),
                 m3eEnabled = sharedPreferences.getBoolean("m3e_enabled", true)
             )
         }
@@ -191,6 +197,13 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
             putBoolean(NotificationAnnouncementService.PREFERENCE_ENABLED, enabled)
         }
         _uiState.update { it.copy(notificationAnnouncementsEnabled = enabled) }
+    }
+
+    fun setHideFromRecents(enabled: Boolean) {
+        sharedPreferences.edit {
+            putBoolean(PREFERENCE_HIDE_FROM_RECENTS, enabled)
+        }
+        _uiState.update { it.copy(hideFromRecents = enabled) }
     }
 
     fun setConversationalAwarenessPauseMusicEnabled(enabled: Boolean) {
