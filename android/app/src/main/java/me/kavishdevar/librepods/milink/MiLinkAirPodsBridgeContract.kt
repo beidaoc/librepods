@@ -25,6 +25,7 @@ object MiLinkAirPodsBridgeContract {
     const val EXTRA_NAME = "name"
     const val EXTRA_CONNECTED = "connected"
     const val EXTRA_ANC_MODE = "anc_mode"
+    const val EXTRA_STATE_REASON = "state_reason"
     const val EXTRA_SPATIAL_AUDIO_MODE = "spatial_audio_mode"
     const val EXTRA_SPATIAL_AUDIO_AVAILABLE = "spatial_audio_available"
     const val EXTRA_LEFT_BATTERY = "left_battery"

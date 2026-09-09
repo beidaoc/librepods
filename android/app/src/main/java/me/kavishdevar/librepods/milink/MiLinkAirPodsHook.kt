@@ -31,11 +31,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.WeakHashMap
 
 /**
- * Minimal HyperOS 4 proof-of-concept bridge.
- *
- * It deliberately hooks only Xiaomi's native AirPods strategy. Xiaomi AirCore remains disabled by
- * XiaomiFixModule; MiLink reads state from LibrePods and ANC clicks are routed back to the existing
- * LibrePods AACP session.
+ * MiLink native and legacy headset bridge. MiLink reads state from LibrePods and ANC clicks
+ * are routed back to the existing LibrePods AACP session.
  */
 object MiLinkAirPodsHook {
     private const val TAG = "LibrePodsMiLink"
@@ -58,6 +55,8 @@ object MiLinkAirPodsHook {
 
     @Volatile
     private var state = BridgeState()
+    @Volatile private var liveStateReceived = false
+    private var detailUpdateMethod: Method? = null
     private var context: Context? = null
     private var receiverRegistered = false
     private var lastStrategy: Any? = null
@@ -70,6 +69,7 @@ object MiLinkAirPodsHook {
     private val pendingAncSelections = WeakHashMap<View, PendingAncSelection>()
     private val optimisticSelectionCall = ThreadLocal<Boolean>()
     private val moreSettingsRedirectCall = ThreadLocal<Boolean>()
+    private var legacyAncHook: MiLinkLegacyAncHook? = null
 
     fun install(module: XposedModule, param: PackageLoadedParam) {
         if (!param.isFirstPackage ||
@@ -78,20 +78,49 @@ object MiLinkAirPodsHook {
             return
         }
 
-        val strategyClass = runCatching {
-            Class.forName(STRATEGY_CLASS, false, param.defaultClassLoader)
-        }.getOrElse {
-            module.logDiagnostic(Log.ERROR, TAG, "Native AirPods strategy unavailable", it)
-            return
+        val strategyClass = findClass(param.defaultClassLoader, STRATEGY_CLASS)
+        MiLinkHookResolver(param.defaultClassLoader) {
+            module.logDiagnostic(Log.INFO, TAG, it)
+        }.use { resolver ->
+            detailUpdateMethod = resolver.anchored(
+                "com.miui.circulateplus.world.headset", "updateMode: ", "void", "int",
+            )
+            if (strategyClass == null) {
+                legacyAncHook = MiLinkLegacyAncHook.resolve(param.defaultClassLoader, detailUpdateMethod)
+            }
+            hookBatteryRefresh(module, resolver)
         }
+        if (strategyClass == null && legacyAncHook == null) {
+            module.logDiagnostic(Log.WARN, TAG, "MiLink ANC UI unavailable: no native strategy or verified legacy layout; independent runtime/battery hooks remain enabled")
+        }
+        module.logDiagnostic(
+            Log.INFO, TAG,
+            "MiLink bridge profile=${if (strategyClass != null) "native_strategy" else "legacy_feature_resolved"}",
+        )
 
         hookContextEntry(module, param.defaultClassLoader)
         hookMxBluetoothCapabilities(module, param.defaultClassLoader)
         hookRuntimeDisplay(module, param.defaultClassLoader)
+        hookMoreSettingsRedirect(module, param.defaultClassLoader)
+
+        if (strategyClass == null) {
+            hookLegacyContextEntry(module, param.defaultClassLoader)
+            legacyAncHook?.install(
+                module,
+                initialize = { registerReceiver(module, it) },
+                isTarget = { state.connected && isTargetDetail(it) },
+                reportedMode = { state.ancMode },
+                sendCommand = { sendAncCommand(null, it) },
+                setIcon = ::setLibrePodsModeIcon,
+                log = { module.logDiagnostic(Log.INFO, TAG, it) },
+            )
+            module.logDiagnostic(Log.INFO, TAG, "Legacy AirPods MiLink bridge hooks installed")
+            return
+        }
+
         hookAncItemPresentation(module, param.defaultClassLoader)
         hookAncOptimisticSelection(module, param.defaultClassLoader)
         hookDetailAncMode(module, param.defaultClassLoader)
-        hookMoreSettingsRedirect(module, param.defaultClassLoader)
 
         strategyClass.declaredConstructors
             .firstOrNull { constructor ->
@@ -121,6 +150,68 @@ object MiLinkAirPodsHook {
         hookSetAnc(module, strategyClass)
 
         module.logDiagnostic(Log.INFO, TAG, "Native AirPods MiLink bridge hooks installed")
+    }
+
+    private fun hookBatteryRefresh(module: XposedModule, resolver: MiLinkHookResolver) {
+        val battery = resolver.anchored(
+            "com.miui.circulate.api.protocol.headset", "get bluetooth device battery:",
+            "java.util.List", "com.miui.circulate.api.service.CirculateServiceInfo",
+        ) ?: return
+        val serviceId = runCatching { battery.parameterTypes[0].getField("deviceId") }
+            .getOrNull()?.takeIf { it.type == String::class.java } ?: return
+        module.hook(battery).intercept { chain ->
+            val snapshot = state
+            val address = runCatching { serviceId.get(chain.args[0]) as? String }.getOrNull()
+            if (MiLinkBatteryPolicy.owns(liveStateReceived, snapshot.connected, snapshot.address, address)) {
+                val values = snapshot.batteryList()
+                module.logDiagnostic(Log.DEBUG, TAG, "Battery read bridge: power=$values")
+                values
+            } else chain.proceed()
+        }
+        // This query normally returns a status code; failures make its caller erase the cached
+        // power and mode. For the live LibrePods device, fill those properties from AACP instead.
+        val query = battery.declaringClass.declaredMethods.singleOrNull {
+            !Modifier.isStatic(it.modifiers) && it.returnType == Int::class.javaPrimitiveType &&
+                it.parameterTypes.map { type -> type.name } == listOf(
+                    "com.miui.circulate.api.service.CirculateDeviceInfo",
+                    "com.miui.circulate.api.protocol.headset.HeadsetDeviceInfo",
+                )
+        }?.apply { isAccessible = true } ?: return logSkipped(module, "battery property refresh signature")
+        val model = query.parameterTypes[1]
+        val fields = runCatching {
+            listOf(model.getField("mac"), model.getField("power"), model.getField("mode")).also {
+                check(it.map { field -> field.type } == listOf(String::class.java, List::class.java, Int::class.javaPrimitiveType))
+            }
+        }.getOrNull() ?: return logSkipped(module, "battery property fields")
+        module.hook(query).intercept { chain ->
+            val info = chain.args[1]
+            val snapshot = state
+            val address = runCatching { fields[0].get(info) as? String }.getOrNull()
+            if (!MiLinkBatteryPolicy.owns(liveStateReceived, snapshot.connected, snapshot.address, address)) {
+                return@intercept chain.proceed()
+            }
+            val filled = runCatching {
+                fields[1].set(info, snapshot.batteryList())
+                fields[2].setInt(info, MiLinkAncModeMapper.toDetailPresenterMode(snapshot.ancMode))
+            }.isSuccess
+            if (filled) {
+                module.logDiagnostic(Log.DEBUG, TAG, "Battery property refresh bridge: power=${snapshot.batteryList()}, anc=${snapshot.ancMode}")
+                100
+            } else chain.proceed()
+        }
+        module.logDiagnostic(Log.INFO, TAG, "Battery refresh hooks installed: read=$battery query=$query")
+    }
+
+    private fun hookLegacyContextEntry(module: XposedModule, loader: ClassLoader) {
+        val owner = findClass(loader, "com.miui.headset.runtime.AncBatteryController") ?: return
+        owner.declaredConstructors.filter {
+            it.parameterTypes.firstOrNull() == Context::class.java
+        }.forEach { constructor ->
+            module.hook(constructor).intercept { chain ->
+                registerReceiver(module, chain.args.firstOrNull() as? Context)
+                chain.proceed().also { rememberRuntime(it, null) }
+            }
+        }
     }
 
     private fun hookContextEntry(module: XposedModule, classLoader: ClassLoader) {
@@ -534,22 +625,19 @@ object MiLinkAirPodsHook {
      * callbacks without fighting this correction hook.
      */
     private fun hookDetailAncMode(module: XposedModule, classLoader: ClassLoader) {
-        val owner = findClass(
-            classLoader,
-            "com.miui.circulateplus.world.headset.r",
-        ) ?: return
-        val updateMode = owner.declaredMethods.firstOrNull { method ->
-            method.name == "M" &&
-                method.returnType == Void.TYPE &&
-                method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
-        }?.apply { isAccessible = true } ?: run {
-            module.logDiagnostic(Log.WARN, TAG, "MiLink detail mode presenter unavailable")
-            return
-        }
+        // Preserve the original native path if a host strips the semantic logging anchor.
+        val updateMode = detailUpdateMethod ?: findClass(classLoader,
+            "com.miui.circulateplus.world.headset.r")?.declaredMethods?.singleOrNull {
+            it.name == "M" && it.returnType == Void.TYPE &&
+                it.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
+        }?.apply { isAccessible = true } ?: return
+        val detailField = updateMode.declaringClass.declaredFields.singleOrNull {
+            it.type.name == "com.miui.circulateplus.world.headset.HeadSetsDetail"
+        }?.apply { isAccessible = true } ?: return
 
         module.hook(updateMode).intercept { chain ->
             val reportedMode = chain.args.firstOrNull() as? Int
-            val detail = readField(chain.thisObject, "a")
+            val detail = detailField.get(chain.thisObject)
             val selectionPending = hasActiveAncSelection(chain.thisObject)
             val resolvedMode = runCatching {
                 if (reportedMode != null && state.connected && isTargetDetail(detail) &&
@@ -581,7 +669,11 @@ object MiLinkAirPodsHook {
     }
 
     private fun hasActiveAncSelection(modePresenter: Any?): Boolean {
-        val card = readField(modePresenter, "e") as? View ?: return false
+        val cards = modePresenter?.javaClass?.declaredFields.orEmpty().mapNotNull { field ->
+            if (!View::class.java.isAssignableFrom(field.type)) return@mapNotNull null
+            runCatching { field.isAccessible = true; field.get(modePresenter) as? View }.getOrNull()
+        }
+        val card = cards.singleOrNull { isAncSelectionCard(it) } ?: return false
         val now = SystemClock.uptimeMillis()
         return synchronized(pendingAncSelections) {
             val pending = pendingAncSelections[card]
@@ -665,6 +757,8 @@ object MiLinkAirPodsHook {
             hookDeviceResult(module, owner, "getAudioSpatialEffectState") {
                 miLinkSpatialMode()
             }
+            // Older ProfileContext passes the MAC address instead of BluetoothDevice.
+            hookStringResult(module, owner, "getAudioSpatialEffectState") { miLinkSpatialMode() }
             hookProfileSetSpatialAudio(module, owner)
         }
 
@@ -862,6 +956,21 @@ object MiLinkAirPodsHook {
     }
 
     private fun hookProfileSetSpatialAudio(module: XposedModule, owner: Class<*>) {
+        owner.declaredMethods.singleOrNull {
+            it.name == "setAudioEffectState" && it.returnType == Void.TYPE &&
+                it.parameterTypes.contentEquals(arrayOf(String::class.java, Int::class.javaPrimitiveType))
+        }?.apply { isAccessible = true }?.let { method ->
+            module.hook(method).intercept { chain ->
+                val address = chain.args[0] as? String
+                if (!isTargetAddress(address)) return@intercept chain.proceed()
+                val mode = chain.args[1] as? Int ?: return@intercept chain.proceed()
+                if (mode !in MiLinkSpatialAudioModeMapper.LIBREPODS_OFF..MiLinkSpatialAudioModeMapper.LIBREPODS_HEAD_TRACKED) {
+                    return@intercept chain.proceed()
+                }
+                applySpatialAudioCommand(module, chain.thisObject, null, mode, "profile address spatial command")
+                null
+            }
+        }
         val method = owner.declaredMethods.firstOrNull {
             it.name == "setAudioEffectState" &&
                 it.parameterTypes.contentEquals(
@@ -1115,14 +1224,21 @@ object MiLinkAirPodsHook {
                     }
                     val newState = BridgeState.fromIntent(intent) ?: return
                     state = newState
+                    liveStateReceived = true
                     context?.let { saveState(it, newState) }
                     syncRuntimeModels()
                     notifyRuntimeStateChanged(module, lastDevice, "AirPods state update")
+                    legacyAncHook?.onStateChanged(
+                        newState.ancMode,
+                        intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_STATE_REASON) ==
+                            "ANC status changed",
+                    )
                     module.logDiagnostic(
                         Log.INFO,
                         TAG,
                         "State updated: connected=${newState.connected}, anc=${newState.ancMode}, " +
-                            "spatial=${newState.spatialAudioMode}",
+                            "spatial=${newState.spatialAudioMode}, power=${newState.batteryList()}, " +
+                            "reason=${intent.getStringExtra(MiLinkAirPodsBridgeContract.EXTRA_STATE_REASON)}",
                     )
                 }
             },
@@ -1130,6 +1246,12 @@ object MiLinkAirPodsHook {
             Context.RECEIVER_EXPORTED,
         )
         receiverRegistered = true
+        if (legacyAncHook != null) {
+            val version = runCatching {
+                appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
+            }.getOrNull()
+            module.logDiagnostic(Log.INFO, TAG, "Legacy bridge receiver registered: hostVersion=$version")
+        }
         requestState(appContext)
     }
 
@@ -1142,10 +1264,16 @@ object MiLinkAirPodsHook {
         )
     }
 
-    private fun sendAncCommand(device: BluetoothDevice?, mode: Int) {
-        val currentContext = context ?: return
-        val token = state.token.takeIf { it.isNotBlank() } ?: return
-        currentContext.sendBroadcast(
+    private fun sendAncCommand(device: BluetoothDevice?, mode: Int): Boolean {
+        val currentContext = context
+        val token = state.token
+        if (currentContext == null || token.isBlank() || !state.connected ||
+            !MiLinkAncModeMapper.isSelectableLibrePodsMode(mode)
+        ) {
+            Log.w(TAG, "ANC broadcast not sent: context=${currentContext != null}, tokenAvailable=${token.isNotBlank()}, connected=${state.connected}, mode=$mode")
+            return false
+        }
+        return runCatching { currentContext.sendBroadcast(
             Intent(MiLinkAirPodsBridgeContract.ACTION_SET_ANC).apply {
                 setPackage(MiLinkAirPodsBridgeContract.LIBREPODS_PACKAGE)
                 putExtra(MiLinkAirPodsBridgeContract.EXTRA_PROTOCOL_VERSION, 1)
@@ -1157,7 +1285,11 @@ object MiLinkAirPodsHook {
                 putExtra(MiLinkAirPodsBridgeContract.EXTRA_ANC_MODE, mode)
                 addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
             },
-        )
+        ) }.onSuccess {
+            Log.i(TAG, "ANC broadcast sent: mode=$mode, profile=${if (legacyAncHook != null) "legacy_feature_resolved" else "native_strategy"}")
+        }.onFailure {
+            Log.e(TAG, "ANC broadcast failed: mode=$mode", it)
+        }.isSuccess
     }
 
     private fun sendSpatialAudioCommand(device: BluetoothDevice?, mode: Int) {
@@ -1198,6 +1330,7 @@ object MiLinkAirPodsHook {
         syncModel(lastModel)
         listOf(lastAncBatteryController, lastProfileContext).forEach { owner ->
             val model = readField(owner, "ancBatteryModel") ?: return@forEach
+            if (legacyAncHook != null && !isTargetAncBatteryModel(model)) return@forEach
             callMethod(model, "setBattery", state.batteryList())
             callMethod(model, "setAncState", MiLinkAncModeMapper.toMiLink(state.ancMode))
             syncSpatialModel(model)
@@ -1289,6 +1422,7 @@ object MiLinkAirPodsHook {
     @SuppressLint("MissingPermission")
     private fun isTarget(device: BluetoothDevice?): Boolean {
         if (device == null) return false
+        if (legacyAncHook != null && !state.connected) return false
         val address = runCatching { device.address }.getOrNull()
         if (state.address.isNotBlank() && address.equals(state.address, ignoreCase = true)) {
             return true
@@ -1299,6 +1433,7 @@ object MiLinkAirPodsHook {
     }
 
     private fun isTargetAddress(address: String?): Boolean =
+        (legacyAncHook == null || state.connected) &&
         !address.isNullOrBlank() &&
             state.address.isNotBlank() &&
             address.equals(state.address, ignoreCase = true)
