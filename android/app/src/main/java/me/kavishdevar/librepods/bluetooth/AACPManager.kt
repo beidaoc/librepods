@@ -247,6 +247,13 @@ class AACPManager {
     var connectedDevices: List<ConnectedDevice> = listOf()
         private set
 
+    private val heartRateAudioRouteEvidence = HeartRateAudioRouteEvidence()
+
+    fun hasLocalHeartRateRoute(localMac: String): Boolean =
+        heartRateAudioRouteEvidence.confirmsLocalRoute(localMac)
+
+    fun clearHeartRateAudioRoute() = heartRateAudioRouteEvidence.clear()
+
     var audioSource: AudioSource? = null
         private set
 
@@ -288,6 +295,7 @@ class AACPManager {
 
         if (identifier == ControlCommandIdentifiers.OWNS_CONNECTION) {
             owns = value.isNotEmpty() && value[0] == 0x01.toByte()
+            if (!owns) clearHeartRateAudioRoute()
         }
     }
 
@@ -640,6 +648,7 @@ class AACPManager {
                 try {
                     val (mac, type) = parseAudioSourceResponse(packet)
                     audioSource = AudioSource(mac, type)
+                    heartRateAudioRouteEvidence.onAudioSource(mac, type != AudioSourceType.NONE)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing audio source response: ${e.message}")
                 }
@@ -1416,6 +1425,7 @@ class AACPManager {
     fun disconnected() {
         Log.d(TAG, "Disconnected, clearing state")
         heartRateProtocol.reset()
+        clearHeartRateAudioRoute()
         controlCommandStatusList.clear()
         controlCommandListeners.clear()
         owns = false

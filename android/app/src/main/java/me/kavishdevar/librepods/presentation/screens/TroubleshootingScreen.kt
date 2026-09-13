@@ -65,7 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -91,7 +91,6 @@ import androidx.core.content.FileProvider
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -128,13 +127,14 @@ fun TroubleshootingScreen() {
     val logCollector = remember { LogCollector.getInstance(context) }
     val savedLogs = remember { mutableStateListOf<File>() }
 
-    var isCollectingLogs by remember { mutableStateOf(false) }
+    val captureState by logCollector.captureState.collectAsState()
+    val isCollectingLogs = captureState.running
+    val isStoppingLogs = captureState.stopping
     var showTroubleshootingSteps by remember { mutableStateOf(false) }
     var currentStep by remember { mutableIntStateOf(0) }
     var logContent by remember { mutableStateOf("") }
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
     var captureSummary by remember { mutableStateOf("") }
-    var isStoppingLogs by remember { mutableStateOf(false) }
     var selectedLogFile by remember { mutableStateOf<File?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
@@ -152,14 +152,29 @@ fun TroubleshootingScreen() {
     var instructionText by remember { mutableStateOf("") }
     val isDarkTheme = isSystemInDarkTheme()
 
-    LaunchedEffect(Unit) {
-        logCollector.lastResult.collect {
-            val files = withContext(Dispatchers.IO) {
-                File(context.filesDir, "logs").listFiles()?.filter { it.name.endsWith(".txt") }
-                    ?.sortedByDescending { it.lastModified() } ?: emptyList()
+    LaunchedEffect(captureState) {
+        val files = withContext(Dispatchers.IO) {
+            File(context.filesDir, "logs").listFiles()?.filter {
+                it.name.endsWith(".txt") && it != captureState.activeFile
+            }?.sortedByDescending { it.lastModified() } ?: emptyList()
+        }
+        savedLogs.clear()
+        savedLogs.addAll(files)
+
+        if (captureState.running) {
+            showTroubleshootingSteps = true
+            currentStep = 3
+        } else {
+            captureState.result?.let { result ->
+                captureSummary = when (result.status) {
+                    LogCollector.Status.COMPLETE -> context.getString(R.string.log_capture_complete)
+                    LogCollector.Status.PARTIAL -> context.getString(R.string.log_capture_partial, result.reason)
+                    LogCollector.Status.FAILED -> context.getString(R.string.log_capture_failed, result.reason)
+                }
+                selectedLogFile = result.file
+                showTroubleshootingSteps = true
+                currentStep = 4
             }
-            savedLogs.clear()
-            savedLogs.addAll(files)
         }
     }
 
@@ -208,41 +223,11 @@ fun TroubleshootingScreen() {
 
     fun startCollection() {
         if (isCollectingLogs) return
-
-        showTroubleshootingSteps = true
-        currentStep = 3
-        isCollectingLogs = true
         logContent = ""
         selectedLogFile = null
-
-        isStoppingLogs = false
         captureSummary = ""
-        coroutineScope.launch {
-            try {
-                val result = logCollector.startLogCollection().await()
-                isCollectingLogs = false
-                isStoppingLogs = false
-                val logFile = result.file
-                captureSummary = when (result.status) {
-                    LogCollector.Status.COMPLETE -> context.getString(R.string.log_capture_complete)
-                    LogCollector.Status.PARTIAL -> context.getString(R.string.log_capture_partial, result.reason)
-                    LogCollector.Status.FAILED -> context.getString(R.string.log_capture_failed, result.reason)
-                }
-                if (logFile != null) {
-                    selectedLogFile = logFile
-                }
-                currentStep = 4
-                Toast.makeText(context, captureSummary, Toast.LENGTH_LONG).show()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                isCollectingLogs = false
-                isStoppingLogs = false
-                captureSummary = context.getString(R.string.log_capture_failed, e.message ?: "unknown")
-                currentStep = 4
-                Toast.makeText(context, captureSummary, Toast.LENGTH_LONG).show()
-            }
-        }
+        // The collector owns both the worker and its state across page recreation.
+        logCollector.startLogCollection()
     }
 
     val backdrop = rememberLayerBackdrop()
@@ -463,7 +448,6 @@ fun TroubleshootingScreen() {
 
                                     Button(
                                         onClick = {
-                                            isStoppingLogs = true
                                             logCollector.stopLogCollection()
                                         },
                                         enabled = !isStoppingLogs,
@@ -828,9 +812,4 @@ fun TroubleshootingScreen() {
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            logCollector.stopLogCollection("screen_closed")
-        }
-    }
 }

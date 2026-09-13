@@ -31,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.milink.MiLinkAirPodsBridgeContract
@@ -50,8 +51,15 @@ class LogCollector private constructor(context: Context) {
     private val stopReason = AtomicReference<String?>(null)
     private val running = AtomicBoolean(false)
     private val commandReports = mutableListOf<String>()
-    private val _lastResult = MutableStateFlow<CaptureResult?>(null)
-    val lastResult = _lastResult.asStateFlow()
+    data class CaptureState(
+        val running: Boolean = false,
+        val stopping: Boolean = false,
+        val activeFile: File? = null,
+        val result: CaptureResult? = null,
+    )
+
+    private val _captureState = MutableStateFlow(CaptureState())
+    val captureState = _captureState.asStateFlow()
 
     enum class Status { COMPLETE, PARTIAL, FAILED }
     data class CaptureResult(val file: File?, val status: Status, val reason: String, val lineCount: Long)
@@ -164,20 +172,31 @@ class LogCollector private constructor(context: Context) {
     }
 
     /** The worker owns its lifetime so cancelling a screen's await does not cancel finalization. */
+    @Synchronized
     fun startLogCollection(): Deferred<CaptureResult> {
         check(running.compareAndSet(false, true)) { "A capture is already running" }
         stopReason.set(null)
+        _captureState.value = CaptureState(running = true)
         return CoroutineScope(Dispatchers.IO).async {
-            try {
-                collect().also { _lastResult.value = it }
-            } finally {
-                running.set(false)
+            val result = try {
+                collect()
+            } catch (error: Exception) {
+                CaptureResult(_captureState.value.activeFile, Status.FAILED,
+                    "capture_failed:${error.message}", 0)
             }
+            synchronized(this@LogCollector) {
+                running.set(false)
+                _captureState.value = CaptureState(result = result)
+            }
+            result
         }
     }
 
+    @Synchronized
     fun stopLogCollection(reason: String = "user_stop") {
-        if (running.get()) stopReason.compareAndSet(null, reason)
+        if (running.get() && stopReason.compareAndSet(null, reason)) {
+            _captureState.update { it.copy(stopping = true) }
+        }
     }
 
     private suspend fun collect(): CaptureResult {
@@ -202,6 +221,7 @@ class LogCollector private constructor(context: Context) {
             val sink = DiagnosticCaptureFile(File(context.filesDir, "logs"), baseName,
                 footerReserveBytes = 128L * 1024)
             capture = sink
+            _captureState.update { it.copy(activeFile = sink.file) }
             sink.append("LibrePods diagnostic capture\nsessionId=$sessionId\n" +
                 "startedAtUtc=${Instant.ofEpochMilli(startedAt)}\n" +
                 "A missing CAPTURE_END footer means this capture was interrupted.\n\n")

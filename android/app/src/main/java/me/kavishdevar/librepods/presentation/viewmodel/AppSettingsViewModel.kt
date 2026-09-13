@@ -65,17 +65,22 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     private val spatialAudioController = RootSpatialAudioController(application)
 
     val sharedPrefListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPref, key ->
-        if (key == "connection_successful") {
-            _uiState.update { it.copy(connectionSuccessful = sharedPref.getBoolean(key, false)) }
+        when (key) {
+            "connection_successful" ->
+                _uiState.update { it.copy(connectionSuccessful = sharedPref.getBoolean(key, false)) }
+            SpatialAudioMode.PREFERENCE_KEY, "spatial_audio_enabled", null ->
+                _uiState.update {
+                    it.copy(spatialAudioMode = SpatialAudioMode.fromPreferences(sharedPref))
+                }
         }
     }
 
 
     init {
+        sharedPreferences.registerOnSharedPreferenceChangeListener(sharedPrefListener)
         loadSettings()
         refreshSpatialAudioCapability()
         observeBilling()
-        sharedPreferences.registerOnSharedPreferenceChangeListener(sharedPrefListener)
     }
 
     override fun onCleared() {

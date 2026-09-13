@@ -1221,7 +1221,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             override fun onHeartRateReceived(sample: AirPodsHeartRateSample) {
                 val (warmup, streamingStarted) = synchronized(heartRateProbeLock) {
-                    if (!heartRateProbeRequested || !aacpManager.owns) return
+                    if (!heartRateProbeRequested || !hasHeartRateControl()) return
                     lastHeartRateSampleElapsedRealtime = SystemClock.elapsedRealtime()
                     val wasStreaming = _heartRateProbeStreaming.value
                     val isWarmup = if (heartRateWarmupRemaining > 0) {
@@ -1300,6 +1300,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     currentSource.mac.equals(localMac, ignoreCase = true)
                 ) {
                     remoteStreamingDevices.clear()
+                    if (heartRateProbeRequested && hasHeartRateControl()) {
+                        heartRateOwnershipTimeoutJob?.cancel()
+                        heartRateOwnershipTimeoutJob = null
+                        scheduleHeartRateProbeAfterOwnershipSettled("AirPods reported local audio source")
+                    }
                 }
                 Log.d(
                     "AirPodsParser",
@@ -3708,6 +3713,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         Log.d(TAG, "setName: $name")
     }
 
+    private fun hasHeartRateControl(): Boolean =
+        aacpManager.owns || aacpManager.hasLocalHeartRateRoute(localMac)
+
     fun setHeartRateMonitoringEnabled(enabled: Boolean) {
         if (enabled) {
             heartRateRemoteTakeoverGate.onHeartRateRequested()
@@ -3716,7 +3724,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 _heartRateProbeEnabled.value = true
                 _heartRateSample.value = null
             }
-            if (aacpManager.owns) {
+            if (hasHeartRateControl()) {
                 startHeartRateProbeIfRequested()
             } else {
                 requestHeartRateOwnership("heart-rate switch enabled")
@@ -3728,6 +3736,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     private fun resetHeartRateMonitoringForSession(reason: String, sendStop: Boolean) {
+        aacpManager.clearHeartRateAudioRoute()
         val wasActive = stopHeartRateProbe(clearRequest = true, sendStop = sendStop)
         if (wasActive) logHeartRateProbeStatus("session-reset:$reason")
     }
@@ -3736,7 +3745,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         heartRateOwnershipSettleJob?.cancel()
         heartRateOwnershipSettleJob = heartRateProbeScope.launch {
             delay(HEART_RATE_OWNERSHIP_SETTLE_MILLIS)
-            if (!heartRateProbeRequested || !aacpManager.owns) return@launch
+            if (!heartRateProbeRequested || !hasHeartRateControl()) return@launch
             Log.i("HeartRateProbe", "ownership settled; starting session reason=$reason")
             startHeartRateProbeIfRequested()
         }
@@ -3766,8 +3775,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         Log.d(TAG, "Remote device started streaming; releasing AACP ownership sender=$sender reason=$reason")
+        val releaseHeartRateControl = heartRateProbeRequested && hasHeartRateControl()
         releaseOwnershipAfterHeartRateStops(reason) {
-            if (aacpManager.owns) {
+            if (aacpManager.owns || releaseHeartRateControl) {
                 aacpManager.sendControlCommand(
                     AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value,
                     byteArrayOf(0x00)
@@ -3784,6 +3794,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d("HeartRateProbe", "remote ownership release already pending reason=$reason")
             return
         }
+        aacpManager.clearHeartRateAudioRoute()
         heartRateRemoteReleaseJob = heartRateProbeScope.launch {
             try {
                 stopHeartRateForRemoteTakeover(reason)
@@ -3837,7 +3848,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (!heartRateProbeRequested ||
             BluetoothConnectionManager.aacpSocket?.isConnected != true
         ) return
-        if (aacpManager.owns) {
+        if (hasHeartRateControl()) {
             startHeartRateProbeIfRequested()
             return
         }
@@ -3861,7 +3872,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         heartRateOwnershipTimeoutJob?.cancel()
         heartRateOwnershipTimeoutJob = heartRateProbeScope.launch {
             delay(HEART_RATE_OWNERSHIP_TIMEOUT_MILLIS)
-            if (heartRateProbeRequested && !aacpManager.owns) {
+            if (heartRateProbeRequested && !hasHeartRateControl()) {
                 Log.w("HeartRateProbe", "local ownership request timed out")
                 resetHeartRateMonitoringForSession(
                     reason = "ownership request timed out",
@@ -3885,12 +3896,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.i("HeartRateProbe", "waiting for AACP connection")
             return
         }
-        if (!aacpManager.owns) {
+        if (!hasHeartRateControl()) {
             Log.i("HeartRateProbe", "waiting for local AACP ownership")
             return
         }
         synchronized(heartRateProbeLock) {
             if (heartRateProbeJob?.isActive == true) return
+            Log.i("HeartRateProbe", "starting session ownershipConfirmed=${aacpManager.owns} " +
+                "localAudioRouteConfirmed=${aacpManager.hasLocalHeartRateRoute(localMac)}")
             _heartRateProbeStreaming.value = false
             lastHeartRateSampleElapsedRealtime = 0L
             val generation = ++heartRateProbeGeneration
@@ -3907,7 +3920,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         try {
             while (heartRateProbeRequested &&
                 BluetoothConnectionManager.aacpSocket?.isConnected == true &&
-                aacpManager.owns
+                hasHeartRateControl()
             ) {
                 var firstSampleTimedOut = false
                 synchronized(heartRateProbeLock) {
@@ -3923,7 +3936,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     Log.i("HeartRateProbe", "sampling request sent interval=1s")
                     while (heartRateProbeRequested &&
                         BluetoothConnectionManager.aacpSocket?.isConnected == true &&
-                        aacpManager.owns
+                        hasHeartRateControl()
                     ) {
                         delay(1_000L)
                         val now = SystemClock.elapsedRealtime()
@@ -3948,7 +3961,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
                 if (!heartRateProbeRequested ||
                     BluetoothConnectionManager.aacpSocket?.isConnected != true ||
-                    !aacpManager.owns
+                    !hasHeartRateControl()
                 ) break
                 aacpManager.sendHeartRateSampling(0)
                 if (firstSampleTimedOut) {
@@ -4034,7 +4047,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun sendHeartRateFrame(send: () -> Boolean): Boolean =
         heartRateProbeRequested &&
             BluetoothConnectionManager.aacpSocket?.isConnected == true &&
-            aacpManager.owns &&
+            hasHeartRateControl() &&
             send()
 
     private fun stopHeartRateProbe(clearRequest: Boolean, sendStop: Boolean): Boolean {
@@ -4084,7 +4097,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         Log.i(
             "HeartRateProbe",
             "status reason=$reason requested=$heartRateProbeRequested " +
-                "streaming=${_heartRateProbeStreaming.value} connected=" +
+                "streaming=${_heartRateProbeStreaming.value} ownershipConfirmed=${aacpManager.owns} " +
+                "localAudioRouteConfirmed=${aacpManager.hasLocalHeartRateRoute(localMac)} connected=" +
                 "${BluetoothConnectionManager.aacpSocket?.isConnected == true} " +
                 "bpm=${sample?.bpm ?: "none"} sequence=${sample?.sequence ?: "none"}"
         )
