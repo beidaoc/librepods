@@ -16,7 +16,6 @@ import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.ui.NavDisplay
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.bluetooth.AACPManager
-import me.kavishdevar.librepods.data.updates.updates
 import me.kavishdevar.librepods.presentation.screens.AccessibilitySettingsScreen
 import me.kavishdevar.librepods.presentation.screens.AdaptiveStrengthScreen
 import me.kavishdevar.librepods.presentation.screens.AirPodsSettingsRoute
@@ -32,7 +31,6 @@ import me.kavishdevar.librepods.presentation.screens.LongPress
 import me.kavishdevar.librepods.presentation.screens.MicrophoneSettingsRoute
 import me.kavishdevar.librepods.presentation.screens.OpenSourceLicensesScreen
 import me.kavishdevar.librepods.presentation.screens.PurchaseScreen
-import me.kavishdevar.librepods.presentation.screens.ReleaseNotesScreen
 import me.kavishdevar.librepods.presentation.screens.RenameScreen
 import me.kavishdevar.librepods.presentation.screens.TransparencySettingsScreen
 import me.kavishdevar.librepods.presentation.screens.TroubleshootingScreen
@@ -48,9 +46,6 @@ import me.kavishdevar.librepods.presentation.viewmodel.PurchaseViewModel
 @OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
 fun AppNavGraph(
-    showReleaseNotes: Boolean = false,
-    updatesShown: () -> Unit = {},
-    showOnboarding: Boolean = false,
     onboardingComplete: () -> Unit = {},
     backStack: SnapshotStateList<Screen>,
     airPodsViewModel: AirPodsViewModel,
@@ -80,7 +75,7 @@ fun AppNavGraph(
                         NavEntry(screen) {
                             OnboardingScreen {
                                 onboardingComplete()
-                                if (showReleaseNotes) navigate(Screen.ReleaseNotes) else navigate(Screen.AirPodsSettings)
+                                navigate(Screen.AirPodsSettings)
                                 backStack.remove(screen)
                             }
                         }
@@ -128,7 +123,6 @@ fun AppNavGraph(
                                 navigateToPurchase = ::navigateToPurchase,
                                 navigateToTroubleshooting = { navigate(Screen.Troubleshooting) },
                                 navigateToOpenSourceLicenses = { navigate(Screen.OpenSourceLicenses) },
-                                navigateToReleaseNotesScreen = { navigate(Screen.ReleaseNotes) }
                             )
                         }
 
@@ -255,22 +249,6 @@ fun AppNavGraph(
                         NavEntry(screen) {
                             if (!airPodsViewModel.isReady) LoadingScreen()
                             MicrophoneSettingsRoute(viewModel = airPodsViewModel)
-                        }
-
-                    is Screen.ReleaseNotes ->
-                        NavEntry(screen) {
-                            ReleaseNotesScreen(
-                                updates = updates,
-                                releaseNotesShown = {
-                                    if (showReleaseNotes) {
-                                        navigate(Screen.AirPodsSettings)
-                                        backStack.remove(screen)
-                                        updatesShown()
-                                    } else {
-                                        backStack.removeAt(backStack.lastIndex)
-                                    }
-                                }
-                            )
                         }
                 }
             },

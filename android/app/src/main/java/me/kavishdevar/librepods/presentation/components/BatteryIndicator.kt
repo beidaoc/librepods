@@ -62,7 +62,7 @@ import kotlin.math.sqrt
 
 @Composable
 fun BatteryIndicator(
-    batteryPercentage: Int,
+    batteryPercentage: Int?,
     status: Int,
     prefix: String = "",
     previousCharging: Boolean = false,
@@ -70,7 +70,7 @@ fun BatteryIndicator(
     val isDarkTheme = isSystemInDarkTheme()
     val batteryTextColor = if (isDarkTheme) Color.White else Color.Black
     val batteryFillColor =
-        if (batteryPercentage > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
+        if ((batteryPercentage ?: 0) > 25) if (isDarkTheme) Color(0xFF2ED158) else Color(0xFF35C759)
         else if (isDarkTheme) Color(0xFFFC4244) else Color(0xFFfe373C)
 
     val initialScale = if (previousCharging) 1f else 0f
@@ -94,7 +94,7 @@ fun BatteryIndicator(
 
             val trackColor = if (isDarkTheme) Color(0xFF272728) else Color(0xFFE3E3E8)
             val optimizedLimit = 0.8f
-            val progress = batteryPercentage / 100f
+            val progress = (batteryPercentage ?: 0) / 100f
 
             Canvas(modifier = Modifier.size(34.dp)) {
                 val startAngle = -90f
@@ -149,7 +149,7 @@ fun BatteryIndicator(
                     val endY = center.y - normY * gapFromCenterPx
 
                     drawLine(
-                        color = if (batteryPercentage >= 80) batteryFillColor else trackColor,
+                        color = if ((batteryPercentage ?: 0) >= 80) batteryFillColor else trackColor,
                         start = Offset(startX, startY),
                         end = Offset(endX, endY),
                         strokeWidth = strokeWidthPx,
@@ -187,7 +187,7 @@ fun BatteryIndicator(
         Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = "$prefix $batteryPercentage%",
+            text = if (batteryPercentage == null) "$prefix —" else "$prefix $batteryPercentage%",
             color = batteryTextColor,
             style = TextStyle(
                 fontSize = 14.sp,

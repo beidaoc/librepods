@@ -214,9 +214,6 @@ fun Main() {
 
     val onboardingComplete = sharedPreferences.getBoolean("onboarding_complete", false)
 
-    val releaseNotesShownPrefKey = "release_notes_shown_${BuildConfig.VERSION_NAME.removeSuffix("-debug").removeSuffix("-play")}"
-    val releaseNotesShown = sharedPreferences.getBoolean(releaseNotesShownPrefKey, false)
-
     fun bindService() {
         context.startForegroundService(Intent(context, AirPodsService::class.java))
         serviceConnection = object: ServiceConnection {
@@ -255,8 +252,6 @@ fun Main() {
     }
 
     NavigationRoot(
-        showReleaseNotes = !releaseNotesShown,
-        updatesShown = { sharedPreferences.edit { putBoolean(releaseNotesShownPrefKey, true) } },
         showOnboarding = !onboardingComplete,
         onboardingComplete = {
             sharedPreferences.edit { putBoolean("onboarding_complete", true) }

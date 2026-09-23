@@ -28,8 +28,6 @@ import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 
 @Composable
 fun NavigationRoot(
-    showReleaseNotes: Boolean = false,
-    updatesShown: () -> Unit = {},
     showOnboarding: Boolean = false,
     onboardingComplete: () -> Unit = {},
     airPodsViewModel: AirPodsViewModel
@@ -38,7 +36,6 @@ fun NavigationRoot(
         mutableStateListOf(
             when {
                 showOnboarding -> Screen.Onboarding
-                showReleaseNotes -> Screen.ReleaseNotes
                 else -> Screen.AirPodsSettings
             }
         )
@@ -72,7 +69,6 @@ fun NavigationRoot(
         Screen.VersionInfo -> stringResource(R.string.version)
         is Screen.CallControl -> currentScreen.action
         Screen.MicrophoneSettings -> stringResource(R.string.microphone_mode)
-        Screen.ReleaseNotes -> ""
     }
 
     // is this a bad idea? probably. I can't think of a better way without having to pass around a shouldShowBackButton to each screen to pass to each scaffold
@@ -147,9 +143,6 @@ fun NavigationRoot(
         actionButtons = actionButtons
     ) {
         AppNavGraph(
-            showReleaseNotes = showReleaseNotes,
-            updatesShown = updatesShown,
-            showOnboarding = showOnboarding,
             onboardingComplete = onboardingComplete,
             backStack = backStack,
             airPodsViewModel = airPodsViewModel,

@@ -34,8 +34,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -64,7 +62,10 @@ fun BatteryView(
     val rightLevel = right?.level ?: 0
     val caseLevel = case?.level ?: 0
 
-    val singleDisplayed = remember { mutableStateOf(false) }
+    val hasLeft = left != null && (leftLevel > 0 || left.status != BatteryStatus.DISCONNECTED)
+    val hasRight = right != null && (rightLevel > 0 || right.status != BatteryStatus.DISCONNECTED)
+    val singleDisplayed = (!hasLeft && !hasRight) ||
+        (hasLeft && hasRight && left?.status == right?.status && (leftLevel - rightLevel) in -3..3)
 
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -86,23 +87,18 @@ fun BatteryView(
                         .padding(8.dp)
                 )
 
-                if (
-                    left?.status == right?.status &&
-                    (leftLevel - rightLevel) in -3..3
-                ) {
+                if (singleDisplayed) {
                     BatteryIndicator(
-                        leftLevel.coerceAtMost(rightLevel),
+                        if (hasLeft && hasRight) leftLevel.coerceAtMost(rightLevel) else null,
                         left?.status ?: BatteryStatus.NOT_CHARGING
                     )
-                    singleDisplayed.value = true
                 } else {
-                    singleDisplayed.value = false
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        if (leftLevel > 0 || left?.status != BatteryStatus.DISCONNECTED) {
+                        if (hasLeft) {
                             BatteryIndicator(
                                 leftLevel,
                                 left?.status ?: BatteryStatus.NOT_CHARGING,
@@ -110,11 +106,11 @@ fun BatteryView(
                             )
                         }
 
-                        if (leftLevel > 0 && rightLevel > 0) {
+                        if (hasLeft && hasRight) {
                             Spacer(modifier = Modifier.width(16.dp))
                         }
 
-                        if (rightLevel > 0 || right?.status != BatteryStatus.DISCONNECTED) {
+                        if (hasRight) {
                             BatteryIndicator(
                                 rightLevel,
                                 right?.status ?: BatteryStatus.NOT_CHARGING,
@@ -137,11 +133,11 @@ fun BatteryView(
                         .padding(8.dp)
                 )
 
-                if (caseLevel > 0 || case?.status != BatteryStatus.DISCONNECTED) {
+                if (case != null && (caseLevel > 0 || case.status != BatteryStatus.DISCONNECTED)) {
                     BatteryIndicator(
                         caseLevel,
                         case?.status ?: BatteryStatus.NOT_CHARGING,
-                        prefix = if (!singleDisplayed.value) "\uDBC3\uDE6C" else ""
+                        prefix = if (!singleDisplayed) "\uDBC3\uDE6C" else ""
                     )
                 }
             }

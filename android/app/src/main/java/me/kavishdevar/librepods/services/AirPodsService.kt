@@ -695,6 +695,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
         macAddress = sharedPreferences.getString("mac_address", "") ?: ""
+        // Bind the existing model cache before a new device can replace mac_address.
+        if (!sharedPreferences.contains("airpods_model_address") && macAddress.isNotBlank()) {
+            sharedPreferences.edit { putString("airpods_model_address", macAddress) }
+        }
 
         telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         phoneStateListener = object: TelephonyCallback(), TelephonyCallback.CallStateListener {
@@ -1166,6 +1170,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 sharedPreferences.edit {
                     putString("name", deviceInformation.name)
                     putString("airpods_model_number", deviceInformation.modelNumber)
+                    putString("airpods_model_address", device?.address ?: macAddress)
                     putString("airpods_manufacturer", deviceInformation.manufacturer)
                     putString("airpods_serial_number", deviceInformation.serialNumber)
                     putString("airpods_left_serial_number", deviceInformation.leftSerialNumber)
@@ -1190,6 +1195,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 config.airpodsUpdaterIdentifier = deviceInformation.updaterIdentifier
 
                 val model = AirPodsModels.getModelByModelNumber(config.airpodsModelNumber)
+                if (model == null) airpodsInstance = null
                 if (model != null) {
                     airpodsInstance = AirPodsInstance(
                         name = config.airpodsName,
@@ -3178,6 +3184,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     try {
                         socket.connect()
                         this@AirPodsService.device = device
+                        val hasCachedModel = device.address.equals(
+                            sharedPreferences.getString("airpods_model_address", ""),
+                            ignoreCase = true
+                        )
+                        if (!hasCachedModel) airpodsInstance = null
                         BluetoothConnectionManager.aacpSocket = socket
                         val useVendorAttSocket = XposedRemotePrefProvider.create().getBoolean(
                             "vendor_id_hook", false
@@ -3209,7 +3220,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         }
 
                         // Create AirPodsInstance from stored config if available
-                        if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {
+                        if (airpodsInstance == null && hasCachedModel && config.airpodsModelNumber.isNotEmpty()) {
                             val model =
                                 AirPodsModels.getModelByModelNumber(config.airpodsModelNumber)
                             if (model != null) {

@@ -113,7 +113,6 @@ fun AppSettingsScreen(
     navigateToPurchase: () -> Unit,
     navigateToTroubleshooting: () -> Unit,
     navigateToOpenSourceLicenses: () -> Unit,
-    navigateToReleaseNotesScreen: () -> Unit
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -582,7 +581,7 @@ fun AppSettingsScreen(
         Spacer(modifier = Modifier.height(20.dp))
         DeviceInfoCard()
         Spacer(modifier = Modifier.height(16.dp))
-        AppInfoCard(navigateToReleaseNotesScreen)
+        AppInfoCard()
 
         Spacer(modifier = Modifier.height(16.dp))
 

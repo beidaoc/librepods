@@ -330,6 +330,8 @@ class AirPodsViewModel(
                 val action = intent?.action ?: return
                 if (!isDemoMode) when (action) {
                     AirPodsNotifications.AIRPODS_L2CAP_CONNECTED -> {
+                        loadInstance()
+                        loadCurrentStatus()
                         _uiState.update {
                             it.copy(isLocallyConnected = true)
                         }
@@ -600,32 +602,44 @@ class AirPodsViewModel(
     }
 
     private fun loadInstance() {
-        val instance = service.airpodsInstance ?: AirPodsInstance(
-            name = "AirPods",
-            model = AirPodsModels.getModelByModelNumber("A3049")!!,
-            actualModelNumber = "A3049",
-            serialNumber = null,
-            leftSerialNumber = null,
-            rightSerialNumber = null,
-            version1 = null,
-            version2 = null,
-            version3 = null,
-        )
+        // Model capabilities are stable across reconnects; do not temporarily impersonate Pro 2.
+        val savedAddress = sharedPreferences.getString("mac_address", "").orEmpty()
+        val currentAddress = service.device?.address ?: service.macAddress
+        val modelAddress = sharedPreferences.getString("airpods_model_address", savedAddress).orEmpty()
+        val canUseSavedModel = currentAddress.isNotBlank() &&
+            currentAddress.equals(modelAddress, ignoreCase = true)
+        val savedModelNumber = if (canUseSavedModel) {
+            sharedPreferences.getString("airpods_model_number", "").orEmpty()
+        } else ""
+        val savedModel = AirPodsModels.getModelByModelNumber(savedModelNumber)
+        val instance = service.airpodsInstance ?: savedModel?.let { model ->
+            AirPodsInstance(
+                name = sharedPreferences.getString("name", "AirPods").orEmpty(),
+                model = model,
+                actualModelNumber = savedModelNumber,
+                serialNumber = sharedPreferences.getString("airpods_serial_number", null),
+                leftSerialNumber = sharedPreferences.getString("airpods_left_serial_number", null),
+                rightSerialNumber = sharedPreferences.getString("airpods_right_serial_number", null),
+                version1 = sharedPreferences.getString("airpods_version1", null),
+                version2 = sharedPreferences.getString("airpods_version2", null),
+                version3 = sharedPreferences.getString("airpods_version3", null),
+            )
+        }
 
         _uiState.update {
             it.copy(
-                capabilities = instance.model.capabilities,
+                capabilities = instance?.model?.capabilities.orEmpty(),
                 instance = instance,
-                modelName = instance.model.displayName,
-                actualModel = instance.actualModelNumber,
+                modelName = instance?.model?.displayName.orEmpty(),
+                actualModel = instance?.actualModelNumber.orEmpty(),
                 serialNumbers = listOf(
-                    instance.serialNumber ?: "",
-                    instance.leftSerialNumber ?: "",
-                    instance.rightSerialNumber ?: ""
+                    instance?.serialNumber.orEmpty(),
+                    instance?.leftSerialNumber.orEmpty(),
+                    instance?.rightSerialNumber.orEmpty()
                 ),
-                version1 = instance.version1 ?: "",
-                version2 = instance.version2 ?: "",
-                version3 = instance.version3 ?: ""
+                version1 = instance?.version1.orEmpty(),
+                version2 = instance?.version2.orEmpty(),
+                version3 = instance?.version3.orEmpty()
             )
         }
     }

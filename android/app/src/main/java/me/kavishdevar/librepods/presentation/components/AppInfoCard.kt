@@ -24,14 +24,11 @@ import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.R
 
 @Composable
-fun AppInfoCard(
-    navigateToReleaseNotesScreen: (() -> Unit)? = null,
-) {
+fun AppInfoCard() {
     StyledList(title = stringResource(R.string.about)) {
         StyledListItem(
             name = stringResource(R.string.version),
             description = BuildConfig.VERSION_NAME,
-            onClick = navigateToReleaseNotesScreen
         )
 
         StyledListItem(
