@@ -17,12 +17,13 @@ import me.kavishdevar.librepods.utils.XposedState
 class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener, DefaultLifecycleObserver {
 
     override fun onCreate() {
+        super<Application>.onCreate()
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.initialize(this)
+        me.kavishdevar.librepods.utils.BackgroundStartGuard.isBlocked(this)
         XposedServiceHelper.registerListener(this)
         Log.i(KEEP_HEART_RATE_TAG, "Registered Xposed service listener")
         BillingManager.provider = BillingProviderFactory.create(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-
-        super<Application>.onCreate()
 
     }
 

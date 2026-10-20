@@ -135,6 +135,10 @@ class LogCollector private constructor(context: Context) {
             )
             appendLine("root=verified uid 0")
             appendLine("historyRequestedSeconds=60 (limited by available logcat buffers)")
+            appendLine("restartHistoryRequestedSeconds=1800 (selected lifecycle tags; limited by system buffers)")
+            appendLine("processEvidence=rolling 64KiB app journal, Android start/exit history, root process/thread samples every 10s during capture")
+            appendLine("restartAttribution=system start reason/caller plus app lifecycle; unknown if the OS did not record it")
+            appendLine("captureCannotSurviveAppForceStop=true; restart collection after reproduction to include persisted evidence")
             appendLine("bluetoothEvidence=logcat across UIDs, cached state every 5s and at connection events, bluetooth_manager dump at start/end")
             appendLine("hciSnoopPackets=not collected; earbud internal decisions may be unavailable")
             appendLine("timeZone=${java.util.TimeZone.getDefault().id}")
@@ -219,7 +223,7 @@ class LogCollector private constructor(context: Context) {
         val recentConnectionEvidence = ArrayDeque<String>()
         try {
             val sink = DiagnosticCaptureFile(File(context.filesDir, "logs"), baseName,
-                footerReserveBytes = 128L * 1024)
+                footerReserveBytes = 256L * 1024)
             capture = sink
             _captureState.update { it.copy(activeFile = sink.file) }
             sink.append("LibrePods diagnostic capture\nsessionId=$sessionId\n" +
@@ -227,6 +231,7 @@ class LogCollector private constructor(context: Context) {
                 "A missing CAPTURE_END footer means this capture was interrupted.\n\n")
             sink.flush()
             sink.append(buildStateSnapshot("START"))
+            sink.append(buildProcessHistory("START"))
             sink.flush()
             commandReports.clear()
             val root = runDiagnosticCommand(listOf("su", "-c", "id"), cancelled = { stopReason.get() != null })
@@ -237,6 +242,9 @@ class LogCollector private constructor(context: Context) {
             val relevantUids = getRelevantUids()
             sink.append(buildDiagnosticHeader(relevantUids))
             sink.append(buildBluetoothDump("START"))
+            sink.append(buildRestartHistory())
+            sink.append(ProcessDiagnostics.services(context, "START"))
+            sink.append(ProcessDiagnostics.snapshot(context, "START"))
             sink.flush()
             if (stopReason.get() != null) {
                 reason = "stopped_before_logcat_start:${stopReason.get()}"
@@ -251,6 +259,7 @@ class LogCollector private constructor(context: Context) {
                 var stopAt: Long? = null
                 var lastFlushAt = launchAt
                 var lastSnapshotAt = launchAt
+                var lastProcessSnapshotAt = launchAt
                 var lastEventSnapshotAt = launchAt - 1_000
                 DiagnosticProcess(listOf("su", "-c", command)).use { process ->
                     Log.i(LOG_TAG, readyMarker)
@@ -276,6 +285,14 @@ class LogCollector private constructor(context: Context) {
                                 break
                             }
                             lastSnapshotAt = now
+                        }
+                        if (liveConfirmed && stopAt == null && now - lastProcessSnapshotAt >= 10_000) {
+                            if (!sink.append(ProcessDiagnostics.snapshot(context, "PERIODIC"))) {
+                                status = Status.PARTIAL
+                                reason = "size_limit"
+                                break
+                            }
+                            lastProcessSnapshotAt = SystemClock.elapsedRealtime()
                         }
                         if (stopAt == null && !liveConfirmed && now - launchAt >= 10_000) {
                             reason = "logcat_start_timeout"
@@ -337,7 +354,12 @@ class LogCollector private constructor(context: Context) {
         }
         val sink = capture ?: return CaptureResult(null, status, reason, lineCount)
         return try {
-            if (rootVerified) sink.append(buildBluetoothDump("END"), footer = true)
+            if (rootVerified) {
+                sink.append(buildBluetoothDump("END"), footer = true)
+                sink.append(ProcessDiagnostics.snapshot(context, "END"), footer = true)
+                sink.append(ProcessDiagnostics.services(context, "END"), footer = true)
+            }
+            sink.append(buildProcessHistory("END"), footer = true)
             sink.append(buildStateSnapshot("END"), footer = true)
             sink.append("\nCONNECTION_EVIDENCE\nrecordCount=$connectionEvidenceCount (related records may describe the same event)\n" +
                 "rootCause=not inferred; reason codes and cached state do not prove a takeover\n" +
@@ -367,11 +389,40 @@ class LogCollector private constructor(context: Context) {
             result.report() + "\nEND_BLUETOOTH_MANAGER\n"
     }
 
+    private fun buildProcessHistory(phase: String): String =
+        "\nPROCESS_HISTORY $phase\nat=${Instant.now()}\n" +
+            ProcessLifecycleTrace.history(context) +
+            "\nPERSISTED_PROCESS_JOURNAL (rolling; may include earlier boots)\n" +
+            ProcessLifecycleTrace.persisted(context) + "\nEND_PROCESS_HISTORY\n"
+
+    private fun buildRestartHistory(): String {
+        val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+            .format(Date(System.currentTimeMillis() - 30 * 60_000))
+        val pkg = context.packageName
+        require(pkg.matches(Regex("[a-zA-Z0-9_.]+")))
+        val command = "set -o pipefail; logcat -d -b all -T '$since' -v threadtime,uid " +
+            "ActivityManager:I ActivityTaskManager:I am_proc_start:I am_proc_died:I am_kill:I am_crash:I am_anr:I " +
+            "am_schedule_service_restart:I NotificationListeners:V LibrePodsProcess:I RootAvrcpTrace:I '*:S' " +
+            "2>&1 | grep -F -e '$pkg' -e LibrePodsProcess -e RootAvrcpTrace -e NotificationListeners " +
+            "-e 'logcat:' -e 'Permission denied' | tail -n 240"
+        val result = runDiagnosticCommand(listOf("su", "-c", command), timeoutMillis = 4_000, maxChars = 65_536)
+        val evidence = result.output.lineSequence().mapNotNull { RestartEvidence.classify(it, pkg) }
+            .toList().takeLast(32).joinToString("\n")
+        return "\nRESTART_SYSTEM_HISTORY\nat=${Instant.now()} requestedSinceLocal=$since\n" +
+            "limit=240 matching lines; no lines means unavailable evidence, not proof of no restart\n" +
+            result.report() + "\nRESTART_ATTRIBUTION\n" +
+            "labels=explicit system events only; caller and component remain in sourceLog; records are not restart counts\n" +
+            evidence.ifEmpty { "attribution=unknown_no_matching_system_record" } +
+            "\nEND_RESTART_SYSTEM_HISTORY\n"
+    }
+
     private suspend fun buildStateSnapshot(phase: String): String = withContext(Dispatchers.Main.immediate) {
         buildString {
             appendLine("\nSTATE_SNAPSHOT $phase")
             appendLine("capturedAtUtc=${Instant.now()}, elapsedRealtimeMs=${SystemClock.elapsedRealtime()}")
             appendLine("snapshotConsistency=best-effort cached state; no connection or playback changes")
+            appendLine("appPid=${android.os.Process.myPid()} appCpuTimeMs=${android.os.Process.getElapsedCpuTime()} " +
+                "backgroundStartBlocked=${BackgroundStartGuard.isBlocked(context)}")
             runCatching {
                 appendLine("keyguardLocked=${context.getSystemService(KeyguardManager::class.java).isKeyguardLocked}")
                 val audio = context.getSystemService(AudioManager::class.java)
@@ -406,7 +457,7 @@ class LogCollector private constructor(context: Context) {
         private val UID_PATTERN = Regex("uid:(\\d+)")
         private val THREADTIME_UID_PATTERN = Regex(
             "^\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d+\\s+" +
-                "(\\d+)\\s+\\d+\\s+\\d+\\s+([VDIWEFAS])\\s+([^:]+):"
+                "(\\d+|root|system|bluetooth|audioserver|u\\d+_a\\d+)\\s+\\d+\\s+\\d+\\s+([VDIWEFAS])\\s+([^:]+):"
         )
         private val RELEVANT_SYSTEM_TAG_PREFIXES = listOf(
             "Audio",
@@ -428,6 +479,9 @@ class LogCollector private constructor(context: Context) {
         )
         private val PROCESS_LIFECYCLE_TAGS = setOf(
             "ActivityManager",
+            "ActivityTaskManager",
+            "am_proc_start",
+            "am_schedule_service_restart",
             "am_anr",
             "am_crash",
             "am_kill",
@@ -450,12 +504,25 @@ class LogCollector private constructor(context: Context) {
         ): Boolean {
             val match = THREADTIME_UID_PATTERN.find(line) ?: return retainedUids == null ||
                 line.startsWith("---------") || line.startsWith("logcat:")
-            val uid = match.groupValues[1]
+            val rawUid = match.groupValues[1]
+            val uid = when (rawUid) {
+                "root" -> "0"
+                "system" -> "1000"
+                "bluetooth" -> "1002"
+                "audioserver" -> "1041"
+                else -> if (rawUid.startsWith("u")) {
+                    val parts = rawUid.removePrefix("u").split("_a")
+                    (parts[0].toLong() * 100_000 + 10_000 + parts[1].toLong()).toString()
+                } else rawUid
+            }
             val priority = match.groupValues[2].first()
             val tag = match.groupValues[3].trim()
+            // The helper runs as root rather than the app UID. Never retain all UID 0 logs.
+            if (uid == "0" && tag == "RootAvrcpTrace") return true
             if (CROSS_UID_BLUETOOTH_TAG_PREFIXES.any(tag.lowercase(Locale.ROOT)::startsWith)) return true
             if (retainedUids != null && uid !in retainedUids) return false
             if (uid !in filteredSystemUids) return true
+            if (tag == "NotificationListeners") return true
             if (RELEVANT_SYSTEM_TAG_PREFIXES.any(tag::startsWith)) return true
             if (tag == "PAL") return priority == 'W' || priority == 'E' || priority == 'F'
             if (tag in PROCESS_LIFECYCLE_TAGS) {

@@ -202,6 +202,7 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
             putBoolean(NotificationAnnouncementService.PREFERENCE_ENABLED, enabled)
         }
         _uiState.update { it.copy(notificationAnnouncementsEnabled = enabled) }
+        if (enabled) NotificationAnnouncementService.resumeIfEnabled(getApplication())
     }
 
     fun setHideFromRecents(enabled: Boolean) {

@@ -59,6 +59,7 @@ class NotificationAnnouncementService : NotificationListenerService() {
     private lateinit var audioManager: AudioManager
     private var textToSpeech: TextToSpeech? = null
     private var ttsReady = false
+    private var listenerConnected = false
     private var ttsGeneration = 0
     private var activeUtteranceId: String? = null
     private var activeConversationToken: String? = null
@@ -102,22 +103,36 @@ class NotificationAnnouncementService : NotificationListenerService() {
         super.onCreate()
         keyguardManager = getSystemService(KeyguardManager::class.java)
         audioManager = getSystemService(AudioManager::class.java)
+        getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(preferenceListener)
         trace("service_created", "featureEnabled=${announcementsEnabled()}")
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        listenerConnected = true
         val enabled = announcementsEnabled()
         trace(
             "listener_connected",
             "featureEnabled=$enabled xiaomiTtsAvailable=${isXiaomiTtsAvailable(this)}"
         )
-        if (enabled) {
-            handler.post { initializeTextToSpeech(preferredEnginePackage()) }
+        if (!enabled) {
+            trace("listener_unbound", "reason=disabled_or_user_stopped")
+            releaseListenerBinding()
+            return
         }
+        handler.post { initializeTextToSpeech(preferredEnginePackage()) }
+    }
+
+    private fun releaseListenerBinding() {
+        // A duplicate ROM binding can arrive after an earlier unbind set the snoozed
+        // flag. Clear that flag while still bound so the next unbind is not a no-op.
+        requestRebind(android.content.ComponentName(this, NotificationAnnouncementService::class.java))
+        requestUnbind()
     }
 
     override fun onListenerDisconnected() {
+        listenerConnected = false
         trace("listener_disconnected")
         super.onListenerDisconnected()
     }
@@ -184,7 +199,20 @@ class NotificationAnnouncementService : NotificationListenerService() {
         }
     }
 
+    private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == PREFERENCE_ENABLED && !announcementsEnabled()) {
+            handler.post {
+                pendingAnnouncements.clear()
+                textToSpeech?.stop()
+                finishAnnouncementPlayback()
+                if (listenerConnected) releaseListenerBinding()
+            }
+        }
+    }
+
     override fun onDestroy() {
+        getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(preferenceListener)
         trace(
             "service_destroyed",
             "active=${activeUtteranceId != null} pending=${pendingAnnouncements.size()} " +
@@ -613,10 +641,15 @@ class NotificationAnnouncementService : NotificationListenerService() {
     }
 
     private fun announcementsEnabled(): Boolean =
+        !me.kavishdevar.librepods.utils.BackgroundStartGuard.isBlocked(this) &&
         getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
             .getBoolean(PREFERENCE_ENABLED, false)
 
     private fun trace(event: String, details: String = "") {
+        if (event in setOf("service_created", "listener_connected", "listener_disconnected",
+                "listener_unbound", "service_destroyed")) {
+            me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("notification_$event", details)
+        }
         Log.d(
             TRACE_TAG,
             if (details.isBlank()) "event=$event" else "event=$event $details"
@@ -630,6 +663,17 @@ class NotificationAnnouncementService : NotificationListenerService() {
         XIAOMI_TTS_PACKAGE.takeIf { isXiaomiTtsAvailable(this) }
 
     companion object {
+        fun resumeIfEnabled(context: Context) {
+            if (!me.kavishdevar.librepods.utils.BackgroundStartGuard.isBlocked(context) &&
+                context.getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
+                    .getBoolean(PREFERENCE_ENABLED, false)
+            ) {
+                me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("notification_rebind_requested",
+                    "source=user_launch_or_feature_toggle")
+                requestRebind(android.content.ComponentName(context, NotificationAnnouncementService::class.java))
+            }
+        }
+
         private const val TAG = "NotificationAnnounce"
         private const val TRACE_TAG = "NotificationAnnounceTrace"
         private const val PREFERENCES_NAME = "settings"

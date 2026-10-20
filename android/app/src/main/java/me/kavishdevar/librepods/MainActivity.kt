@@ -87,6 +87,8 @@ class MainActivity : ComponentActivity() {
     @ExperimentalHazeMaterialsApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        me.kavishdevar.librepods.utils.BackgroundStartGuard.onUserLaunch(this)
+        me.kavishdevar.librepods.services.NotificationAnnouncementService.resumeIfEnabled(this)
         enableEdgeToEdge()
 
         settingsPreferences = getSharedPreferences("settings", MODE_PRIVATE)

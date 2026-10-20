@@ -72,6 +72,24 @@ class LogCollectorFilterTest {
         assertTrue(keep("logcat: unexpected diagnostic output"))
     }
 
+    @Test fun retainsRootHelperButNotUnrelatedRootCommands() {
+        val retained = setOf("1000", "10505")
+        for (uid in listOf("0", "root")) {
+            assertTrue(LogCollector.shouldKeepLogLine(line(uid, tag = "RootAvrcpTrace"), filteredSystemUids, retained))
+            assertFalse(LogCollector.shouldKeepLogLine(line(uid, tag = "adbd"), filteredSystemUids, retained))
+        }
+        assertFalse(LogCollector.shouldKeepLogLine(line("10600", tag = "RootAvrcpTrace"), filteredSystemUids, retained))
+        assertTrue(LogCollector.shouldKeepLogLine(line("u0_a505", tag = "LibrePodsProcess"), filteredSystemUids, retained))
+    }
+
+    @Test fun retainsSystemRestartCallerAndListenerBindingErrors() {
+        for (tag in listOf("ActivityTaskManager", "am_proc_start", "am_schedule_service_restart")) {
+            assertTrue(keep(line("1000", tag = tag, message = "me.kavishdevar.librepods caller=android reason=bound-service")))
+            assertFalse(keep(line("1000", tag = tag, message = "org.example.unrelated")))
+        }
+        assertTrue(keep(line("1000", tag = "NotificationListeners", message = "Service not registered")))
+    }
+
     private fun keep(value: String): Boolean =
         LogCollector.shouldKeepLogLine(value, filteredSystemUids)
 

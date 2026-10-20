@@ -451,6 +451,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag", "HardwareIds")
     override fun onCreate() {
         super.onCreate()
+        blockedAtCreation = me.kavishdevar.librepods.utils.BackgroundStartGuard.isBlocked(this)
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("airpods_service_create", "blocked=$blockedAtCreation")
+        if (blockedAtCreation) {
+            Log.i(TAG, "Ignoring background service creation after user stop")
+            stopSelf()
+            return
+        }
         Log.i(TAG, "lib exempt worked: ${isBluetoothSocketExempted()}")
 
         sharedPreferencesLogs = getSharedPreferences("packet_logs", MODE_PRIVATE)
@@ -1869,7 +1876,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         _packetLogsFlow.value = emptySet()
     }
 
-    override fun onBind(intent: Intent?): IBinder {
+    private var blockedAtCreation = false
+
+    override fun onBind(intent: Intent?): IBinder? {
+        if (blockedAtCreation) return null
         return LocalBinder()
     }
 
@@ -2910,6 +2920,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("InlinedApi", "MissingPermission", "UnspecifiedRegisterReceiverFlag")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("airpods_service_start",
+            "action=${intent?.action} nullIntent=${intent == null} flags=$flags startId=$startId blocked=$blockedAtCreation")
+        if (blockedAtCreation) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         Log.d(TAG, "Service started with intent action: ${intent?.action}")
 
         when (intent?.action) {
@@ -4198,6 +4214,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("airpods_service_destroy", "blocked=$blockedAtCreation")
+        if (blockedAtCreation) {
+            heartRateProbeScope.cancel()
+            audioFeatureScope.cancel()
+            super.onDestroy()
+            return
+        }
         attManager.close()
         remoteStreamingDevices.clear()
         clearPacketLogs()
@@ -4247,6 +4270,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("task_removed",
+            "blocked=$blockedAtCreation stickyService=true")
+        if (blockedAtCreation) {
+            super.onTaskRemoved(rootIntent)
+            return
+        }
         resetHeartRateMonitoringForSession(
             reason = "app task removed",
             sendStop = true
@@ -4434,7 +4463,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val result = rootAvrcpVolumeController.resend(
                 target.address,
                 pulseVolume,
-                volume
+                volume,
+                reason = reason
             )
             withContext(Dispatchers.Main) {
                 if (result.success) {
@@ -4460,7 +4490,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         ) return
         val target = device ?: return
         audioFeatureScope.launch(Dispatchers.IO) {
-            val result = rootAvrcpVolumeController.prewarm(target.address)
+            val result = rootAvrcpVolumeController.prewarm(target.address, reason)
             if (result.success) {
                 Log.i(TAG, "Prewarmed root AirPods volume bridge: $reason")
             } else {
@@ -4483,7 +4513,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 target.address,
                 pulseVolume,
                 volume,
-                awaitPlayback = true
+                awaitPlayback = true,
+                reason = "local_media_playback_start"
             )
             withContext(Dispatchers.Main) {
                 earlyA2dpVolumeResyncInFlight = false

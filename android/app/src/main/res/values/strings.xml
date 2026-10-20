@@ -326,4 +326,7 @@
     <string name="log_capture_failed">Log capture failed: %1$s</string>
     <string name="log_capture_stopping">Finishing…</string>
     <string name="log_capture_stop">Stop collection</string>
+    <string name="eq_low">Low</string>
+    <string name="eq_mid">Mid</string>
+    <string name="eq_high">High</string>
 </resources>

@@ -19,6 +19,9 @@ import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.util.Log;
+import java.util.Arrays;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -28,17 +31,29 @@ import java.lang.reflect.Method;
 /** Root app_process entry point that resends the active AirPods AVRCP volume. */
 @SuppressLint("MissingPermission")
 public final class AvrcpVolumeRootCommand {
-    private static final long PLAYBACK_POLL_INTERVAL_MS = 20L;
+    private static final long PLAYBACK_POLL_INTERVAL_MS = 100L;
+    private static final long PLAYBACK_TIMEOUT_MS = 6_000L;
     private static final long PREWARM_TIMEOUT_MS = 30L * 60L * 1_000L;
 
     private static BluetoothAdapter adapter;
     private static BluetoothProfile proxy;
     private static volatile boolean finished;
+    private static String commandId = "unknown";
+    private static long startedAt;
+    private static long waitStartedAt;
+    private static long lastProgressAt;
+    private static int pollCount;
 
     private AvrcpVolumeRootCommand() {}
 
     public static void main(String[] args) {
+        startedAt = SystemClock.elapsedRealtime();
         try {
+            if (args.length > 0 && args[args.length - 1].startsWith("--session=")) {
+                commandId = args[args.length - 1].substring("--session=".length());
+                if (!commandId.matches("[0-9-]{1,80}")) throw new IllegalArgumentException("Invalid command session");
+                args = Arrays.copyOf(args, args.length - 1);
+            }
             boolean waitForPlayback = args.length == 2 && "--wait".equals(args[1]);
             if (!waitForPlayback && args.length != 3) {
                 throw new IllegalArgumentException(
@@ -48,6 +63,8 @@ public final class AvrcpVolumeRootCommand {
             String address = args[0];
             int pulseVolume = waitForPlayback ? 0 : parseVolume(args[1]);
             int restoreVolume = waitForPlayback ? 0 : parseVolume(args[2]);
+            trace("start", "mode=" + (waitForPlayback ? "wait" : "direct") +
+                    " ppid=" + android.system.Os.getppid());
 
             if (Looper.getMainLooper() == null) {
                 Looper.prepareMainLooper();
@@ -70,13 +87,16 @@ public final class AvrcpVolumeRootCommand {
                                 return;
                             }
                             proxy = service;
+                            trace("profile_connected", "profile=" + profileId);
                             try {
                                 BluetoothA2dp a2dp = (BluetoothA2dp) service;
                                 if (waitForPlayback) {
                                     System.out.println("ready=1");
                                     System.out.flush();
-                                    waitForTrigger(a2dp, target);
+                                    trace("ready", "prewarmTimeoutMs=" + PREWARM_TIMEOUT_MS);
+                                    watchOwner(a2dp, target, true);
                                 } else {
+                                    watchOwner(a2dp, target, false);
                                     sendVolume(a2dp, target, pulseVolume, restoreVolume);
                                 }
                             } catch (Throwable error) {
@@ -111,6 +131,7 @@ public final class AvrcpVolumeRootCommand {
             Looper.loop();
         } catch (Throwable error) {
             if (!finished) {
+                trace("exit", "status=1 reason=" + describe(error));
                 System.out.println("error=" + describe(error));
             }
             closeProxy();
@@ -118,45 +139,58 @@ public final class AvrcpVolumeRootCommand {
         }
     }
 
-    private static void waitForTrigger(BluetoothA2dp a2dp, BluetoothDevice target) {
-        Thread triggerThread = new Thread(() -> {
+    private static void watchOwner(BluetoothA2dp a2dp, BluetoothDevice target, boolean expectsTrigger) {
+        Thread ownerThread = new Thread(() -> {
             try {
-                String trigger = new BufferedReader(
-                        new InputStreamReader(System.in)).readLine();
-                String[] fields = trigger == null
-                        ? new String[0] : trigger.trim().split("\\s+");
-                if (fields.length != 3 || !"go".equals(fields[0])) {
-                    finishWithError("Invalid prewarmed AVRCP trigger");
-                    return;
-                }
-                int pulseVolume = parseVolume(fields[1]);
-                int restoreVolume = parseVolume(fields[2]);
-                new Handler(Looper.getMainLooper()).post(
-                        () -> waitForTargetPlayback(
-                                a2dp, target, pulseVolume, restoreVolume));
+                RootCommandInput.readUntilClosed(
+                        new BufferedReader(new InputStreamReader(System.in)), expectsTrigger,
+                        (pulse, restore) -> {
+                            waitStartedAt = SystemClock.elapsedRealtime();
+                            trace("trigger", "timeoutMs=" + PLAYBACK_TIMEOUT_MS + " pollIntervalMs=" + PLAYBACK_POLL_INTERVAL_MS);
+                            long deadline = SystemClock.elapsedRealtime() + PLAYBACK_TIMEOUT_MS;
+                            new Handler(Looper.getMainLooper()).post(
+                                    () -> waitForTargetPlayback(a2dp, target, pulse, restore, deadline));
+                        });
+                finishWithError("AVRCP owner disconnected");
             } catch (Throwable error) {
                 finishWithError(describe(error));
             }
-        }, "librepods-avrcp-trigger");
-        triggerThread.setDaemon(true);
-        triggerThread.start();
+        }, "librepods-avrcp-owner");
+        ownerThread.setDaemon(true);
+        ownerThread.start();
     }
 
     private static void waitForTargetPlayback(
             BluetoothA2dp a2dp,
             BluetoothDevice target,
             int pulseVolume,
-            int restoreVolume
+            int restoreVolume,
+            long deadline
     ) {
         if (finished) return;
+        if (SystemClock.elapsedRealtime() >= deadline) {
+            finishWithError("AirPods playback wait timed out");
+            return;
+        }
         try {
+            pollCount++;
             boolean connected = a2dp.getConnectionState(target)
                     == BluetoothProfile.STATE_CONNECTED;
-            boolean playing = connected && (Boolean) invoke(
+            if (!connected) {
+                finishWithError("Target AirPods disconnected");
+                return;
+            }
+            boolean playing = (Boolean) invoke(
                     a2dp,
                     "isA2dpPlaying",
                     new Class<?>[] {BluetoothDevice.class},
                     target);
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastProgressAt >= 1_000L) {
+                lastProgressAt = now;
+                trace("playback_wait", "polls=" + pollCount + " waitMs=" + (now - waitStartedAt) +
+                        " connected=" + connected + " playing=" + playing);
+            }
             if (playing) {
                 System.out.println("playback=1");
                 System.out.flush();
@@ -165,7 +199,7 @@ public final class AvrcpVolumeRootCommand {
             }
             new Handler(Looper.getMainLooper()).postDelayed(
                     () -> waitForTargetPlayback(
-                            a2dp, target, pulseVolume, restoreVolume),
+                            a2dp, target, pulseVolume, restoreVolume, deadline),
                     PLAYBACK_POLL_INTERVAL_MS);
         } catch (Throwable error) {
             finishWithError(describe(error));
@@ -266,6 +300,7 @@ public final class AvrcpVolumeRootCommand {
     private static synchronized void finishSuccessfully() {
         if (finished) return;
         finished = true;
+        trace("exit", "status=0 reason=volume_sent polls=" + pollCount);
         System.out.flush();
         closeProxy();
         System.exit(0);
@@ -274,6 +309,7 @@ public final class AvrcpVolumeRootCommand {
     private static synchronized void finishWithError(String message) {
         if (finished) return;
         finished = true;
+        trace("exit", "status=1 reason=" + message + " polls=" + pollCount);
         System.out.println("error=" + message);
         System.out.flush();
         closeProxy();
@@ -285,6 +321,17 @@ public final class AvrcpVolumeRootCommand {
             adapter.closeProfileProxy(BluetoothProfile.A2DP, proxy);
             proxy = null;
         }
+    }
+
+    private static void trace(String event, String details) {
+        String line = "entry=" + AvrcpVolumeRootCommand.class.getName() +
+                " commandId=" + commandId + " pid=" + android.os.Process.myPid() +
+                " elapsedMs=" + (SystemClock.elapsedRealtime() - startedAt) +
+                " event=" + event + " " + details.replace('\n', ' ').replace('\r', ' ');
+        // Logcat survives the owning app; stdout lets the app journal mirror live events.
+        Log.i("RootAvrcpTrace", line);
+        System.out.println("ROOT_AVRCP " + line);
+        System.out.flush();
     }
 
     private static String describe(Throwable error) {

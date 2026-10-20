@@ -145,6 +145,8 @@ class QuickSettingsDialogActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        me.kavishdevar.librepods.utils.BackgroundStartGuard.onUserLaunch(this)
+        me.kavishdevar.librepods.services.NotificationAnnouncementService.resumeIfEnabled(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
         window.addFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH)
         window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)

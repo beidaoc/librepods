@@ -50,48 +50,33 @@ enum class Capability {
 class AirPods: AirPodsBase(
     modelNumber = listOf("A1523", "A1722"),
     name = "AirPods 1",
-    // budCaseRes = R.drawable.airpods_1
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_1_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_1_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_1_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_1_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_1_buds,
+    budsRes = R.drawable.airpods_1_buds,
+    leftBudsRes = R.drawable.airpods_1_left,
+    rightBudsRes = R.drawable.airpods_1_right,
+    caseRes = R.drawable.airpods_1_case,
     capabilities = emptySet()
 )
 
 class AirPods2: AirPodsBase(
     modelNumber = listOf("A2032", "A2031"),
     name = "AirPods 2",
-    // budCaseRes = R.drawable.airpods_2
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_2_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_2_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_2_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_2_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_2_buds,
+    budsRes = R.drawable.airpods_2_buds,
+    leftBudsRes = R.drawable.airpods_2_left,
+    rightBudsRes = R.drawable.airpods_2_right,
+    caseRes = R.drawable.airpods_2_case,
     capabilities = emptySet()
 )
 
 class AirPods3: AirPodsBase(
     modelNumber = listOf("A2565", "A2564"),
     name = "AirPods 3",
-    // budCaseRes = R.drawable.airpods_3
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_3_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_3_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_3_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_3_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_3_buds,
+    budsRes = R.drawable.airpods_3_buds,
+    leftBudsRes = R.drawable.airpods_3_left,
+    rightBudsRes = R.drawable.airpods_3_right,
+    caseRes = R.drawable.airpods_3_case,
     capabilities = setOf(
         Capability.HEAD_GESTURES
     )
@@ -100,16 +85,11 @@ class AirPods3: AirPodsBase(
 class AirPods4: AirPodsBase(
     modelNumber = listOf("A3053", "A3050", "A3054"),
     name = "AirPods 4",
-    // budCaseRes = R.drawable.airpods_4
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_4_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_4_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_4_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_4_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_4_buds,
+    budsRes = R.drawable.airpods_4_buds,
+    leftBudsRes = R.drawable.airpods_4_left,
+    rightBudsRes = R.drawable.airpods_4_right,
+    caseRes = R.drawable.airpods_4_case,
     capabilities = setOf(
         Capability.HEAD_GESTURES,
         Capability.SLEEP_DETECTION,
@@ -120,16 +100,11 @@ class AirPods4: AirPodsBase(
 class AirPods4ANC: AirPodsBase(
     modelNumber = listOf("A3056", "A3055", "A3057"),
     name = "AirPods 4 (ANC)",
-    // budCaseRes = R.drawable.airpods_4
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_4_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_4_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_4_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_4_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_4_anc_buds,
+    budsRes = R.drawable.airpods_4_anc_buds,
+    leftBudsRes = R.drawable.airpods_4_anc_left,
+    rightBudsRes = R.drawable.airpods_4_anc_right,
+    caseRes = R.drawable.airpods_4_anc_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
@@ -148,11 +123,11 @@ class AirPods5: AirPodsBase(
     modelNumber = listOf("A3531", "A3532", "A3533"),
     name = "AirPods 5",
     displayName = "AirPods 5",
-    budCaseRes = R.drawable.airpods_pro_2,
-    budsRes = R.drawable.airpods_pro_2_buds,
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_5_buds,
+    budsRes = R.drawable.airpods_5_buds,
+    leftBudsRes = R.drawable.airpods_5_left,
+    rightBudsRes = R.drawable.airpods_5_right,
+    caseRes = R.drawable.airpods_5_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
@@ -168,11 +143,11 @@ class AirPods5Wireless: AirPodsBase(
     modelNumber = listOf("A3439", "A3440", "A3441"),
     name = "AirPods 5 (Wireless Charging Case)",
     displayName = "AirPods 5 (Wireless Charging Case)",
-    budCaseRes = R.drawable.airpods_pro_2,
-    budsRes = R.drawable.airpods_pro_2_buds,
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_5_wireless_buds,
+    budsRes = R.drawable.airpods_5_wireless_buds,
+    leftBudsRes = R.drawable.airpods_5_wireless_left,
+    rightBudsRes = R.drawable.airpods_5_wireless_right,
+    caseRes = R.drawable.airpods_5_wireless_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
@@ -189,16 +164,11 @@ class AirPodsPro1: AirPodsBase(
     modelNumber = listOf("A2084", "A2083"),
     name = "AirPods Pro 1",
     displayName = "AirPods Pro",
-    // budCaseRes = R.drawable.airpods_pro_1
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_pro_1_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_pro_1_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_pro_1_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_pro_1_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_pro_1_buds,
+    budsRes = R.drawable.airpods_pro_1_buds,
+    leftBudsRes = R.drawable.airpods_pro_1_left,
+    rightBudsRes = R.drawable.airpods_pro_1_right,
+    caseRes = R.drawable.airpods_pro_1_case,
     capabilities = setOf(
         Capability.LISTENING_MODE
     )
@@ -208,15 +178,10 @@ class AirPodsPro2Lightning: AirPodsBase(
     modelNumber = listOf("A2931", "A2699", "A2698"),
     name = "AirPods Pro 2 with Magsafe Charging Case (Lightning)",
     displayName = "AirPods Pro",
-    // budCaseRes = R.drawable.airpods_pro_2
     budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_pro_2_buds
     budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_pro_2_left
     leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_pro_2_right
     rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_pro_2_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
@@ -236,15 +201,10 @@ class AirPodsPro2USBC: AirPodsBase(
     modelNumber = listOf("A3047", "A3048", "A3049"),
     name = "AirPods Pro 2 with Magsafe Charging Case (USB-C)",
     displayName = "AirPods Pro",
-    // budCaseRes = R.drawable.airpods_pro_2
     budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_pro_2_buds
     budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_pro_2_left
     leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_pro_2_right
     rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_pro_2_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
@@ -264,16 +224,11 @@ class AirPodsPro3: AirPodsBase(
     modelNumber = listOf("A3063", "A3064", "A3065"),
     name = "AirPods Pro 3",
     displayName = "AirPods Pro",
-    // budCaseRes = R.drawable.airpods_pro_3
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_pro_3_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_pro_3_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_pro_3_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_pro_3_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_pro_3_buds,
+    budsRes = R.drawable.airpods_pro_3_buds,
+    leftBudsRes = R.drawable.airpods_pro_3_left,
+    rightBudsRes = R.drawable.airpods_pro_3_right,
+    caseRes = R.drawable.airpods_pro_3_case,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,

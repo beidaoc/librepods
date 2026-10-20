@@ -28,6 +28,11 @@ import me.kavishdevar.librepods.services.AirPodsService
 
 class BootReceiver: BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
+        if (context == null) return
+        val blocked = me.kavishdevar.librepods.utils.BackgroundStartGuard.isBlocked(context)
+        me.kavishdevar.librepods.utils.ProcessLifecycleTrace.record("boot_receiver",
+            "action=${intent?.action} blocked=$blocked")
+        if (blocked) return
         when (intent?.action) {
             Intent.ACTION_MY_PACKAGE_REPLACED -> try { context?.startForegroundService(
                 Intent(
